@@ -37,10 +37,12 @@ this repository. They are copied from the player's own installed game at every
 
 ## Third-party software
 
-- **Python** (PSF License) and its standard library. Court Brain needs no other
-  packages to run.
+- **Python** (PSF License) and its standard library.
+- **PyJWT** (MIT), **cryptography** (Apache-2.0 or BSD-3-Clause), and
+  **jsonschema** (MIT), plus their dependencies, are bundled for authentication
+  and response validation. See `tools/court_brain/requirements.txt`.
 - **PyInstaller** (GPL 2.0 with the bootloader exception) packs the release exe.
   It is used only to build and is not part of the source.
-- The AI services Court Brain can talk to (Player2, Google Gemini, Mistral,
+- The AI services Court Brain can talk to (OpenAI, Google Gemini, Mistral,
   OpenRouter) have their own terms. Each player accepts those terms with their
   own account.

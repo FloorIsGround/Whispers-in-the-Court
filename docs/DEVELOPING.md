@@ -13,7 +13,9 @@ tools/court_brain/             Court Brain, the Python middleware
     prompts.py                     every text the AI receives
     actions.py                     the catalogue of consequences (queue slots)
     works.py, trade.py, ...        decrees' works, trade deals, ...
-    player2.py                     the AI providers (Player2, Gemini, Mistral, OpenRouter)
+    ai/                            ChatGPT auth, text providers and schema validation
+    voice.py                       independent optional speech capability
+    chatgpt_settings.py            account/model UI (network work off the Tk thread)
     memory.py                      the campaign's memory
     worldsave.py, world.py         reading the save and the live game
     bundle.py                      installing the mod, starting EU5
@@ -31,9 +33,14 @@ workshop/                      Steam Workshop cover and screenshots
 
 ## Running from the sources
 
-You need Python 3.10 or newer (the releases use 3.14). No packages are needed:
-Court Brain uses only the standard library, and `tkinter` comes with the
-python.org installer.
+Use Python 3.11 or newer with `tkinter` (included in the python.org Windows
+installer). Releases use Python 3.14. Install the pinned runtime dependencies:
+
+```bat
+py -3 -m pip install -r tools\court_brain\requirements.txt
+```
+
+They provide verified JWT signatures and complete JSON schema validation.
 
 ```bat
 cd tools\court_brain
@@ -71,6 +78,19 @@ The queue's numbering must never shift: a slot id may already be parked in a
 player's save. New variants are always appended at the end of
 `actions.variants()`.
 
+## Testing Court Brain
+
+```bat
+py -3 -m unittest discover -s tools\court_brain\tests -v
+```
+
+Tests use synthetic JWTs, temporary credential stores, a real loopback callback,
+and fake response streams. They never access real credentials or spend AI usage.
+The UI smoke tests run with hidden Tk windows and no game installation.
+
+For live diagnostics, see [CHATGPT.md](CHATGPT.md). A model catalog response
+does not verify generation; `--ai-test` makes an actual small inference request.
+
 ## Checking the mod
 
 ```bat
@@ -91,8 +111,8 @@ EU5 reads the mod's files as written: UTF-8 **with BOM** and LF line endings.
 py -3 tools\build_exe.py
 ```
 
-It runs `validate_mod.py`, installs PyInstaller if missing (only needed to
-build), draws the icon and writes `dist\WhispersInTheCourt.exe` (about 12 MB),
+It installs the pinned runtime dependencies, runs `validate_mod.py`, installs
+PyInstaller if missing (only needed to build), draws the icon and writes `dist\WhispersInTheCourt.exe` ,
 with Python, Court Brain and a copy of the mod inside. At start the exe installs
 or updates that mod copy in EU5's mod folder.
 

@@ -10,14 +10,23 @@ telemetry, no update check and no analytics.
 
 | Service | Address | When |
 |---|---|---|
-| Player2 (default) | `http://127.0.0.1:<port>/v1`, the Player2 app on your own PC | always, unless you choose another provider |
+| OpenAI identity | `https://auth.openai.com` | explicit ChatGPT sign-in/out and session renewal |
+| ChatGPT plan | `https://api.openai.com/v1/models` and `/responses` | model listing and requests for your selected ChatGPT account |
 | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | only with your own Gemini key |
 | Mistral | `https://api.mistral.ai/v1` | only with your own Mistral key |
 | OpenRouter | `https://openrouter.ai/api/v1` | only with your own OpenRouter key |
 
 What is sent: the text of the scene (your words, a summary of your realm and of
 the characters taken from your save, and the campaign's memory). Only the
-provider you chose receives it. All requests are in `courtbrain/player2.py`.
+provider you chose receives it. Provider requests are in `courtbrain/ai/`.
+
+Sign-in temporarily listens on `127.0.0.1` at an available port for the browser
+callback. OAuth uses PKCE, state and nonce; signed identity tokens are checked
+against OpenAI's keys. HTTP redirects are not followed with bearer credentials.
+Account registration requires separate consent to use the ChatGPT plan.
+
+No model tools, shell access, hosted MCP or Codex subprocess are enabled. AI
+responses are schema-validated, then pass the existing game-action rules.
 
 ## What it reads and writes
 
@@ -25,6 +34,15 @@ provider you chose receives it. All requests are in `courtbrain/player2.py`.
   `tools/court_brain/config.json` when run from the sources. API keys are stored
   only here, in plain text, on your PC. They are never written anywhere else and
   never shown in the log.
+- **ChatGPT credentials:** `%LOCALAPPDATA%\WhispersInTheCourt\auth\chatgpt.credentials`
+  on Windows, encrypted with DPAPI for the current Windows user. The portable
+  provider layer uses owner-only files under XDG data storage on POSIX; the game
+  companion itself is supported on Windows. Tokens are never stored in game
+  saves or ordinary settings. Refreshes use an OS file lock and atomic writes.
+  Sign-out clears local tokens and attempts remote revocation. A failed remote
+  revocation is reported; disconnect the app in ChatGPT settings if needed.
+- **Migration backup:** an old config is retained as `config.json.pre-chatgpt.bak`.
+  It may contain the old API keys; protect it like the original settings.
 - **The mod:** `Documents\Paradox Interactive\Europa Universalis V\mod\WhispersInTheCourt`.
   It is installed or updated there, but never while EU5 is running. At install it
   copies a few interface files from your own copy of the game into the mod, to

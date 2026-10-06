@@ -1,9 +1,9 @@
-"""Court Brain: the loop that joins EU5, the side panel and the Player2 app.
+"""Court Brain: the loop that joins EU5, the side panel and the selected AI provider.
 
     click in game ─► mod raises a signal ─► bridge widget writes "votc_say ..."
         lines into console_history.txt ─► Court Brain reads them, opens the
         side panel on the right person/court/place
-    the player talks in the panel ─► Player2 answers ─► small consequences
+    the player talks in the panel ─► the AI answers ─► small consequences
         pile up, heavy ones become buttons
     the conversation closes ─► Court Brain mails the outcome ─► the bridge
         widget picks up the mail, runs it, and the event appears in game
@@ -48,7 +48,11 @@ from .mailbox import Mailbox, with_gist
 from .memory import CampaignStore, Memory
 from .names import NameRegistry, PlaceNames
 from .savesindex import SavesIndex, read_info
-from .player2 import Player2Client, Player2Error, make_client
+from .ai import AIError, AIService, make_client
+from .ai.base import AICancelled
+from .ai.chatgpt_auth import ChatGPTAuth
+from .ai.factory import DisconnectedClient
+from .voice import make_voice
 from .protocol import Record, parse_lines
 from .world import ESTATES, Person, Snapshot, SnapshotBuilder, diff, own_crown
 
@@ -218,14 +222,17 @@ class CourtBrain:
         self.cfg = cfg
         cfg.event_frequency = FREQUENCY_ALIASES.get(cfg.event_frequency, cfg.event_frequency)
         self.log = log or (lambda msg: print(msg, flush=True))
-        self.client = make_client(cfg, log=self.log)
-        self.client.room = self._load_room()
-        self.client.on_room = self._save_room
+        self.auth = ChatGPTAuth()
+        self.client = AIService(make_client(cfg, auth=self.auth))
+        self.voice = make_voice(cfg)
+        self._timeline_generation = 0
+        self.client.context_key = lambda: (self._timeline_generation, id(self.session))
         self.client.on_meter = self._ai_metered
         self._tally = self._new_tally()
         self.tail = HistoryTail(cfg.user_path / "console_history.txt")
         self.mail = Mailbox(run_dir=cfg.run_path, dynamic_loc=cfg.dynamic_loc_path,
                             language_key=f"l_{cfg.game_language}")
+        self.mail.before_send = self.client.assert_current
         self.codex = codex_mod.Codex()
         self.memory: Memory | None = None
         self.builder = SnapshotBuilder()
@@ -340,33 +347,14 @@ class CourtBrain:
         self.mail.send(["votc_show_need_debug = yes"], label="need_debug")
 
     # ------------------------------------------------------------ the AI's bill
-    def _load_room(self) -> dict[str, int]:
-        try:
-            data = json.loads((self.cfg.state_dir / "ai_room.json").read_text(encoding="utf-8"))
-            return {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
-        except (OSError, ValueError, TypeError):
-            return {}
-
-    def _save_room(self, room: dict[str, int]) -> None:
-        try:
-            (self.cfg.state_dir / "ai_room.json").write_text(json.dumps(room), encoding="utf-8")
-        except OSError:
-            pass
-
     USAGE_LIMIT = 2 * 1024 * 1024
-
-    def _meter(self) -> None:
-        meter = getattr(self.client, "meter", None)
-        if meter is not None:
-            meter()
 
     @staticmethod
     def _new_tally() -> dict[str, Any]:
-        return {"since": time.time(), "calls": 0, "in": 0, "out": 0, "joules": 0.0, "known": True}
+        return {"since": time.time(), "calls": 0, "in": 0, "out": 0}
 
     def _ai_metered(self, records: list[dict[str, Any]]) -> None:
-        """Every request's cost - model, tokens, and the joules Player2 took for it - one line in
-        ai_usage.jsonl (Court Brain's folder); the scene's own requests are also added up."""
+        """Provider/model token usage only; never infer money or plan quota from tokens."""
         tally = self._tally
         lines = []
         for r in records:
@@ -374,13 +362,7 @@ class CourtBrain:
                 tally["calls"] += 1
                 tally["in"] += r["in"]
                 tally["out"] += r["out"]
-                if r.get("joules") is None:
-                    tally["known"] = False
-                else:
-                    tally["joules"] += r["joules"]
-            lines.append(json.dumps({"t": round(r["t"]), "kind": r["kind"], "model": r["model"], "in": r["in"],
-                                     "out": r["out"], "try": r["try"], "joules": r.get("joules"),
-                                     **({"voice": True} if r.get("voice") else {})}))
+            lines.append(json.dumps(r))
         path = self.cfg.state_dir / "ai_usage.jsonl"
         try:
             if path.is_file() and path.stat().st_size > self.USAGE_LIMIT:
@@ -391,15 +373,9 @@ class CourtBrain:
             pass
 
     def _log_scene_cost(self) -> None:
-        """What the scene cost, said in the record once its last answer is billed (a few seconds later)."""
-        def later() -> None:
-            self._meter()
-            t, self._tally = self._tally, self._new_tally()
-            if t["calls"]:
-                joules = f", {t['joules']:.0f} joules" if t["known"] else ""
-                self.log(f"  AI for this scene: {t['calls']} requests, {t['in']:,} tokens read, "
-                         f"{t['out']:,} written{joules}")
-        threading.Timer(8.0, later).start()
+        t, self._tally = self._tally, self._new_tally()
+        if t["calls"]:
+            self.log(f"  AI for this scene: {t['calls']} requests, {t['in']:,} tokens read, {t['out']:,} written")
 
     def _scene_dropped(self, label: str) -> None:
         self.log(f"The game did not load the text of a scene ({label}) after three tries: it is not shown.")
@@ -417,14 +393,7 @@ class CourtBrain:
             self.codex = codex_mod.load_or_build(self.cfg.game_dir, self.cfg.state_dir, self.cfg.game_language)
             self.log(f"Codex: {len(self.codex.laws)} laws, {len(self.codex.privileges)} privileges, "
                      f"{len(self.codex.tags)} countries read from the game files.")
-        if self.client.is_up():
-            self.log(f"Player2 answers at {self.cfg.player2_base}." if self.client.NAME == "Player2" else
-                     f"{self.client.NAME} answers ({getattr(self.client, 'model', '')}).")
-        else:
-            self.log("WARNING: Player2 does not answer. Open the Player2 app and log in."
-                     if self.client.NAME == "Player2" else
-                     f"WARNING: {self.client.NAME} does not answer: check the API key and the model in Settings.")
-        self.client.start_health_pings(self.cfg.health_ping_s)
+        self._check_provider()
         self.mail.reset_files()
         # The names chosen in earlier games must exist before any save using them loads.
         if self.cfg.mod_dir:
@@ -445,8 +414,9 @@ class CourtBrain:
         snap = self.snapshot
         return {
             "game": self.game_seen,
-            "player2": getattr(self.client, "up", None),
-            "provider": getattr(self.client, "NAME", "Player2"),
+            "ai": getattr(self.client, "up", None),
+            "ai_detail": self.client.detail,
+            "provider": getattr(self.client, "NAME", "AI"),
             "model": getattr(self.client, "model", ""),
             "campaign": self.memory.campaign if self.memory else "",
             "memories": len(self.memory.events) if self.memory else 0,
@@ -456,22 +426,27 @@ class CourtBrain:
             "frequency": self.cfg.event_frequency,
         }
 
-    def set_provider(self) -> None:
-        """From the Court Brain window: the AI that writes was changed in Settings (any thread).
-        The new client takes over from the next request; what it learned carries over."""
-        old = self.client
-        new = make_client(self.cfg, log=self.log)
-        new.room, new.on_room, new.on_meter = old.room, old.on_room, old.on_meter
-        self.client = new
-
+    def _check_provider(self) -> None:
+        client = self.client._client
         def check() -> None:
-            if new.NAME == "Player2":
-                ok = new.is_up()
-                self.log("AI: Player2" + (" answers." if ok else " does not answer - open the Player2 app."))
-                return
-            ok, detail = new.check()
-            self.log(f"AI: {new.NAME}, {detail}." if ok else f"WARNING: {new.NAME} does not answer: {detail}")
-        threading.Thread(target=check, daemon=True).start()
+            try:
+                ok, detail = client.check()
+                if client is self.client._client:
+                    self.log(f"AI: {client.NAME}: {detail}")
+            except AICancelled:
+                pass
+            except AIError as exc:
+                self.log(f"AI connection: {exc}")
+        threading.Thread(target=check, name="ai-check", daemon=True).start()
+
+    def pause_ai(self) -> None:
+        self.client.replace(DisconnectedClient())
+
+    def set_provider(self) -> None:
+        if self._stop.is_set():
+            return
+        self.client.replace(make_client(self.cfg, auth=self.auth))
+        self._check_provider()
 
     def set_frequency(self, key: str) -> None:
         """From the Court Brain window (any thread)."""
@@ -480,7 +455,7 @@ class CourtBrain:
         self.cfg.event_frequency = key
         self._story_gap = 0              # the next pause is drawn at the new pace
         try:
-            config_mod.set_option("event_frequency", key)
+            config_mod.set_option("event_frequency", key, getattr(self.cfg, "_config_path", None))
         except OSError:
             pass
         self.log(f"Frequency of unprompted events: {FREQUENCY_TEXT.get(key, key)}")
@@ -498,7 +473,9 @@ class CourtBrain:
 
     def stop(self) -> None:
         self._stop.set()
+        self.auth.cancel_login()
         self.client.close()
+        self.voice.close()
         if self.memory:
             self.memory.save(force=True)
 
@@ -764,6 +741,7 @@ class CourtBrain:
             self.mail.send(lost, loc=loc or None, label="scenes", mark=False)
 
     def _open_campaign(self, cid: int, snap: Snapshot) -> None:
+        self._timeline_generation += 1
         if self.memory is not None:
             self.memory.save(force=True)
         self.memory = self.store.open(cid, tag=snap.tag, name=snap.name)
@@ -803,6 +781,7 @@ class CourtBrain:
         assert mem is not None
         if head == mem.head:
             return
+        self._timeline_generation += 1
         old = mem.head
         mem.checkout(head)
         lost = mem.forgotten_since(old)
@@ -1378,7 +1357,7 @@ class CourtBrain:
         try:
             data = self.client.complete_json([{"role": "user", "content": task}], prompts.ACTOR_PART_SCHEMA,
                                              schema_name="votc_part", temperature=0.5, max_tokens=1600)
-        except Player2Error as exc:
+        except AIError as exc:
             self.log(f"  the part was not prepared ({exc})")
             return
         parts = []
@@ -1464,7 +1443,7 @@ class CourtBrain:
                 [{"role": "user", "content": prompts.PERSONA_UPDATE_TASK.format(
                     years=years, persona=text, news="\n".join(news))}],
                 prompts.PERSONA_UPDATE_SCHEMA, schema_name="votc_persona_now", temperature=0.85, max_tokens=900)
-        except Player2Error:
+        except AIError:
             return text
         now, details = _t(data.get("now"), 500), _t(data.get("details"), 600)
         lines = [l for l in text.split("\n") if not l.startswith(("NOW:", "DETAILS:"))]
@@ -1513,7 +1492,7 @@ class CourtBrain:
                         [{"role": "user", "content": nl.join(lines)}], prompts.NOTE_SCHEMA,
                         schema_name="votc_persona", temperature=0.9, max_tokens=2000)
                     text = _cap(data.get("text"), 2000)
-                except Player2Error:
+                except AIError:
                     text = ""
                 if text:
                     self.memory.set_persona(person.name, text)
@@ -1525,7 +1504,7 @@ class CourtBrain:
                         [{"role": "user", "content": prompts.VOICE_TASK + nl + nl + f"{person.name}: {text}"}],
                         prompts.NOTE_SCHEMA, schema_name="votc_voice", temperature=0.8, max_tokens=1500)
                     voice = _cap(data.get("text"), 600)
-                except Player2Error:
+                except AIError:
                     voice = ""
                 if voice:
                     text = f"{text}{nl}VOICE: {voice.removeprefix('VOICE:').strip()}"
@@ -1589,7 +1568,7 @@ class CourtBrain:
                 if stale:
                     self.log("The realm has changed" + (f" ({'; '.join(changed)})" if changed else " with the years")
                              + ": its profile was rewritten.")
-            except Player2Error:
+            except AIError:
                 pass
         return self.memory.realm_profile
 
@@ -1627,7 +1606,6 @@ class CourtBrain:
         if kind == "reply" and self._reply_arc and mode == "reply":
             session.arc_id, self._reply_arc = self._reply_arc, 0
         self.session = session
-        self._meter()                     # what came before is charged to what came before
         self._tally = self._new_tally()
         self._ui("open", header)
         self._ui("set_busy", "…")
@@ -1846,7 +1824,7 @@ class CourtBrain:
                     return
                 if again.get("lines"):
                     data = again
-            except Player2Error:
+            except AIError:
                 pass
         # The scenes richest in English papers (the council: laws, dossiers, the parts prepared in
         # English) sometimes answer in English: said again, once, in the player's language.
@@ -1866,7 +1844,7 @@ class CourtBrain:
                     return
                 if again.get("lines"):
                     data = again
-            except Player2Error:
+            except AIError:
                 pass
         session.turns += 1
         raw_lines = [l for l in (data.get("lines") or []) if isinstance(l, dict) and str(l.get("text", "")).strip()]
@@ -1933,7 +1911,7 @@ class CourtBrain:
             said.append(f"{speaker}: {shown}" if speaker else shown)
             session.transcript.append(f"{speaker}: {text}")
             if self.cfg.tts_enabled:
-                self.client.speak(text, self.cfg.tts_voice_id)
+                self.voice.speak(text, self.cfg.tts_voice_id)
         inner = [i for i in (data.get("inner") or []) if isinstance(i, dict) and i.get("name")][:4]
         stand = " | ".join(f"{_t(i.get('name'), 40)}: {_t(i.get('feeling'), 60)}; unsaid: {_t(i.get('unsaid'), 90)}; "
                            f"wants {_t(i.get('wants'), 80)}; played: {_t(i.get('tactic'), 30)}" for i in inner)
@@ -2001,7 +1979,7 @@ class CourtBrain:
                 messages + [{"role": "assistant", "content": text},
                             {"role": "user", "content": prompts.BIOGRAPHER_INDIRECT_FIX.format(found=found)}],
                 schema, schema_name=schema_name, temperature=0.7, max_tokens=max_tokens)
-        except Player2Error:
+        except AIError:
             return data
         if len(str(again.get(key) or "")) > len(text) * 0.6:
             return {**data, **again}
@@ -2202,7 +2180,7 @@ class CourtBrain:
             data = self.client.complete_json(
                 [{"role": "user", "content": prompts.DECISIONS_CHECK.format(talk=self._scene_talk(session, 9000))}],
                 prompts.DECISIONS_SCHEMA, schema_name="votc_decision", temperature=0.0, max_tokens=600)
-        except Player2Error:
+        except AIError:
             return []                     # when in doubt, nothing happens
         out = []
         for d in data.get("decisions") or []:
@@ -2268,7 +2246,7 @@ class CourtBrain:
                     prompts.referee_schema(diplomatic=session.diplomatic), schema_name="votc_referee",
                     temperature=0.3, max_tokens=2500)
                 break
-            except Player2Error as exc:
+            except AIError as exc:
                 if last_try or not exc.retryable:
                     self.log(f"  the referee could not judge this conversation: {exc}")
                     self._ui("add_note", "✖ The AI could not be reached to weigh what was decided: this "
@@ -2835,7 +2813,7 @@ class CourtBrain:
                 prompts.suggest_messages(language=self.cfg.language, ruler=ruler, title=snap.ruler_title or "ruler",
                                          realm=snap.long_name or snap.name, other=other, transcript=transcript),
                 prompts.SUGGEST_SCHEMA, schema_name="votc_replies", temperature=0.8, max_tokens=1500)
-        except Player2Error as exc:
+        except AIError as exc:
             self.log(f"  suggested replies not generated: {exc}")
             self._ui("offer_suggestions", True)
             return
@@ -3075,7 +3053,7 @@ class CourtBrain:
         try:
             data = self.client.complete_json([{"role": "user", "content": task}], R.schema(),
                                              schema_name="votc_reactions", temperature=0.5, max_tokens=1800)
-        except Player2Error as exc:
+        except AIError as exc:
             self.log(f"  the realm's reaction was not judged: {exc}")
             return None
         done = R.build(data, snap=snap, world=self.world, difficulty=self.cfg.difficulty, known_tag=self._known_tag,
@@ -3731,7 +3709,7 @@ class CourtBrain:
                 schema["required"] = list(schema["required"]) + ["byline"]
             data = self.client.complete_json(messages, schema, schema_name="votc_outcome",
                                              temperature=0.7, max_tokens=2500)
-        except Player2Error as exc:
+        except AIError as exc:
             self.log(f"Outcome not generated: {exc}")
             data = {"title": session.header.title, "body": "\n".join(session.transcript[-3:]), "memory_note": ""}
         if len(str(data.get("body") or "")) < 450:
@@ -3749,7 +3727,7 @@ class CourtBrain:
                          f"{len(str(again.get('body') or ''))} characters")
                 if len(str(again.get("body") or "")) > len(str(data.get("body") or "")):
                     data = {**data, **again}
-            except Player2Error:
+            except AIError:
                 pass
         if bio:
             data = self._indirect(messages, data, "body", schema, "votc_outcome", 2500)
@@ -3842,7 +3820,7 @@ class CourtBrain:
         try:
             data = self.client.complete_json([{"role": "user", "content": ask}], prompts.BIOGRAPHER_SCHEMA,
                                              schema_name="votc_biographer", temperature=0.95, max_tokens=1200)
-        except Player2Error as exc:
+        except AIError as exc:
             self.log(f"  no biographer could be found: {exc}")
             return None
         name = _t(data.get("name"), 60)
@@ -3910,7 +3888,7 @@ class CourtBrain:
         """The audience with the biographer: their book open on the desk."""
         bio = self._biographer(snap)
         if not bio or self.memory is None:
-            self._ui("add_note", "There is no biographer at court yet: Player2 could not be reached.")
+            self._ui("add_note", "There is no biographer at court yet: the AI provider could not be reached.")
             self._ui("set_busy", "")
             return
         name, origin = bio.get("name", ""), bio.get("origin", "")
@@ -4235,7 +4213,7 @@ class CourtBrain:
         try:
             data = self.client.complete_json(msgs, prompts.BOOK_SCHEMA, schema_name="votc_book", temperature=0.8,
                                              max_tokens=3000)
-        except Player2Error as exc:
+        except AIError as exc:
             self.log(f"  the book could not be written: {exc}")
             return chapters
         data = self._indirect(msgs, data, "text", prompts.BOOK_SCHEMA, "votc_book", 3000)
@@ -4273,7 +4251,7 @@ class CourtBrain:
                         + c["text"])}],
                     prompts.BOOK_SCHEMA, schema_name="votc_book_short", temperature=0.6, max_tokens=1500)
                 short = _cap(data.get("text"), target + 300)
-            except Player2Error:
+            except AIError:
                 short = ""
             chapters[i] = {**c, "text": short or _cap(c["text"], target)}
         return chapters
@@ -4304,7 +4282,7 @@ class CourtBrain:
         try:
             data = self.client.complete_json(msgs, schema, schema_name="votc_obituary", temperature=0.75,
                                              max_tokens=2000)
-        except Player2Error as exc:
+        except AIError as exc:
             self.log(f"  the account of the reign could not be written: {exc}")
             return
         data = self._indirect(msgs, data, "body", schema, "votc_obituary", 2000)
@@ -4368,7 +4346,7 @@ class CourtBrain:
                     start = end + 1
                 if fixed:
                     parts = fixed
-            except (Player2Error, ValueError, TypeError) as exc:
+            except (AIError, ValueError, TypeError) as exc:
                 self.log(f"  the plan of the book failed ({exc}): writing it in even parts")
                 step = -(-count // wanted)
                 parts = [{"title": "", "first_note": i + 1, "last_note": min(count, i + step), "about": ""}
@@ -4413,7 +4391,7 @@ class CourtBrain:
             try:
                 data = self.client.complete_json(msgs, prompts.BOOK_SCHEMA, schema_name="votc_book_part",
                                                  temperature=0.8, max_tokens=3500)
-            except Player2Error as exc:
+            except AIError as exc:
                 self.log(f"  part {i + 1} of the book could not be written: {exc}")
                 break
             data = self._indirect(msgs, data, "text", prompts.BOOK_SCHEMA, "votc_book_part", 3500)
@@ -4499,7 +4477,7 @@ class CourtBrain:
             title = _t(data.get("title"), 70) or title
             body = _cap(data.get("body"), 900) or body
             gist = _t(data.get("gist"), 240)
-        except Player2Error:
+        except AIError:
             pass
         self.mail.send(["votc_show_century = yes"], loc={
             "votc_cen_title": title, "votc_cen_body": with_gist(gist, body),
@@ -4611,7 +4589,7 @@ class CourtBrain:
         for title, text in parts:
             self._ui("add_line", title, text)
         if not parts:
-            self._ui("add_note", "The book could not be written now (is Player2 running?).")
+            self._ui("add_note", "The book could not be written now (check the AI connection in Settings).")
         self._ui("set_busy", "")
         if in_hub:
             self._ui("set_hub", back)
@@ -5344,7 +5322,7 @@ class CourtBrain:
                 mem.fold_into_summary(text, mem.events[-1].date if mem.events else "")
                 self.log(f"The chronicle of the reign was condensed: {len(facts)} older facts folded in "
                          f"(the journal keeps them all).")
-        except Player2Error as exc:
+        except AIError as exc:
             self.log(f"  the chronicle could not be condensed now: {exc}")
         finally:
             self._folding = False
@@ -6185,7 +6163,7 @@ class CourtBrain:
         try:
             plan = self.client.complete_json([{"role": "user", "content": ask}], prompts.KNOCK_PLAN_SCHEMA,
                                              schema_name="votc_knock_plan", temperature=0.7, max_tokens=700)
-        except Player2Error as exc:
+        except AIError as exc:
             self.log(f"  no audience: {exc}")
             return
         who = int(plan.get("who") or 0)
@@ -6221,7 +6199,7 @@ class CourtBrain:
                 [{"role": "user", "content": prompts.STILL_OPEN_TASK.format(what=what, since=since or "earlier",
                                                                               news="\n".join(news))}],
                 prompts.STILL_OPEN_SCHEMA, schema_name="votc_still_open", temperature=0.2, max_tokens=400)
-        except Player2Error:
+        except AIError:
             return "open", ""
         status = data.get("status") if data.get("status") in ("open", "settled", "changed") else "open"
         if status != "open":
@@ -6921,7 +6899,7 @@ class CourtBrain:
         try:
             data = self.client.complete_json([{"role": "user", "content": task}], prompts.CONSEQUENCE_CHECK_SCHEMA,
                                              schema_name="votc_consequence_check", temperature=0.3, max_tokens=900)
-        except Player2Error as exc:
+        except AIError as exc:
             self.log(f"  second look at the consequences not made ({exc}): kept as written")
             return acts
         before = sum(len(x) for x in acts)
@@ -6968,7 +6946,7 @@ class CourtBrain:
                     others=others, language=prompts.LANGUAGE_NAMES.get(self.cfg.language, self.cfg.language))}],
                 prompts.LABELS_SCHEMA, schema_name="votc_labels", temperature=0.5, max_tokens=300)
             labels = [_t(x, 70) for x in (data.get("labels") or [])]
-        except Player2Error:
+        except AIError:
             labels = []
         for j, i in enumerate(missing):
             got = labels[j] if j < len(labels) else ""
@@ -7209,7 +7187,14 @@ class CourtBrain:
             self.drawer.post(method, *args)
 
     def _submit(self, job: Callable[[], None]) -> None:
-        self._work.put(job)
+        generation = self._timeline_generation
+        connection = self.client.generation
+        def current_job() -> None:
+            valid = lambda: (generation == self._timeline_generation and connection == self.client.generation
+                             and not self._stop.is_set())
+            with self.client.job(valid):
+                job()
+        self._work.put(current_job)
 
     def _worker(self) -> None:
         while not self._stop.is_set():
@@ -7220,7 +7205,10 @@ class CourtBrain:
             self.busy = True
             try:
                 job()
-            except Player2Error as exc:
+            except AICancelled as exc:
+                self.log(str(exc))
+                self._ui("set_busy", "")
+            except AIError as exc:
                 self.log(f"Problem with {self.client.NAME}: {exc}")
                 self._ui("set_busy", "")
                 self._ui("add_note", f"{self.client.NAME} does not answer: {exc}", "bad")
