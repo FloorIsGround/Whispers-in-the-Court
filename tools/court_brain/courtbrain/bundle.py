@@ -369,9 +369,9 @@ def single_instance() -> bool:
     global _MUTEX
     global _LINUX_LOCK
     if sys.platform.startswith("linux"):
-        from .platform_linux import InstanceLock
+        from .platform_linux import InstanceLock, instance_lock_directory
         if _LINUX_LOCK is None:
-            _LINUX_LOCK = InstanceLock(config_path().parent)
+            _LINUX_LOCK = InstanceLock(instance_lock_directory())
         return _LINUX_LOCK.acquire()
     if not hasattr(sys, "getwindowsversion"):
         return True

@@ -334,11 +334,106 @@ def _default_config_path() -> Path:
     return config_path()
 
 
+def _open_private_config(directory_fd: int, name: str) -> int | None:
+    """Validate an existing Linux config before chmod/read; caller closes the fd.
+
+    Good: owned, single-link regular files are tightened to 0600, even on load.
+    Bad: follow a symlink or chmod a foreign-owned/hardlinked file to 'repair' it.
+    Missing files return None; unsafe existing files raise OSError.
+    """
+    import stat
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     dir_fd=directory_fd)
+    except FileNotFoundError:
+        return None
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_nlink != 1):
+            raise OSError("Config must be an owned, single-link regular file")
+        os.fchmod(fd, 0o600)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_private_config(path: Path) -> dict[str, Any]:
+    """Read Linux settings only after securing the chain and existing file.
+
+    Good: load an owned 0644 config to migrate it to 0600 before reading keys.
+    Bad: treat unsafe-path errors as missing config and silently overwrite it.
+    Existing safe 0755 directories are retained; only new directories are 0700.
+    """
+    from .platform_linux import secure_directory
+    path = path.absolute()
+    try:
+        directory_fd = secure_directory(path.parent)
+    except FileNotFoundError:
+        return {}
+    try:
+        fd = _open_private_config(directory_fd, path.name)
+        if fd is None:
+            return {}
+        try:
+            chunks = []
+            while chunk := os.read(fd, 65536):
+                chunks.append(chunk)
+            return json.loads(b"".join(chunks).decode("utf-8"))
+        finally:
+            os.close(fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _write_private_config(path: Path, text: str) -> None:
+    """Atomically replace Linux settings with a private 0600 file via dirfds.
+
+    Good: save/set_option in an owned safe directory (new components use 0700).
+    Bad: write through symlinks, writable/foreign ancestors, or hardlinked files.
+    Existing owned regular files are tightened before replacement. Unsafe paths
+    fail closed, never silently chmod foreign files or fall back to plain writes.
+    """
+    from .platform_linux import secure_directory
+    path = path.absolute()
+    directory_fd = secure_directory(path.parent, create=True)
+    temporary = None
+    try:
+        existing = _open_private_config(directory_fd, path.name)
+        if existing is not None:
+            os.close(existing)
+        candidate = ".courtbrain-config-" + os.urandom(16).hex()
+        fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=directory_fd)
+        temporary = candidate  # Cleanup only a file that this invocation actually created.
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as output:
+                output.write(text)
+                output.flush()
+                os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        temporary = None
+        os.fsync(directory_fd)
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+        os.close(directory_fd)
+
+
 def load(path: str | os.PathLike[str] | None = None) -> Config:
     """Load config.json, filling in anything missing by discovery."""
     cfg_path = Path(path) if path else _default_config_path()
     data: dict[str, Any] = {}
-    if cfg_path.is_file():
+    if sys.platform.startswith("linux"):
+        data = _read_private_config(cfg_path)
+    elif cfg_path.is_file():
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
 
     known = {f for f in Config.__dataclass_fields__}
@@ -369,6 +464,14 @@ def set_option(key: str, value: Any, path: str | os.PathLike[str] | None = None)
     """Change one setting in config.json, leaving everything else as the player wrote it."""
     cfg_path = Path(path) if path else _default_config_path()
     data: dict[str, Any] = {}
+    if sys.platform.startswith("linux"):
+        try:
+            data = _read_private_config(cfg_path)
+        except ValueError:
+            data = {}
+        data[key] = value
+        _write_private_config(cfg_path, json.dumps(data, indent=2, ensure_ascii=False))
+        return
     if cfg_path.is_file():
         try:
             data = json.loads(cfg_path.read_text(encoding="utf-8"))
@@ -381,11 +484,12 @@ def set_option(key: str, value: Any, path: str | os.PathLike[str] | None = None)
 
 def save(cfg: Config, path: str | os.PathLike[str] | None = None) -> Path:
     cfg_path = Path(path) if path else _default_config_path()
-    if sys.platform.startswith("linux"):
-        cfg_path.parent.mkdir(parents=True, exist_ok=True)
     data = asdict(cfg)
     data.pop("extra", None)
-    cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    if sys.platform.startswith("linux"):
+        _write_private_config(cfg_path, json.dumps(data, indent=2))
+    else:
+        cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return cfg_path
 
 

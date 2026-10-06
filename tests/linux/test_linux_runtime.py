@@ -15,11 +15,14 @@ from courtbrain import bundle, config
 
 class Sandbox(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        previous_umask = os.umask(0o022)
+        self.addCleanup(os.umask, previous_umask)
+        self.temp = tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"])
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name)
         self.env = patch.dict(os.environ, {"HOME": str(self.home), "XDG_CONFIG_HOME": str(self.home / "config"),
-                                          "XDG_DATA_HOME": str(self.home / "data")}, clear=True)
+                                          "XDG_DATA_HOME": str(self.home / "data"),
+                                          "TMPDIR": str(self.home)}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
         self.spawn = patch("subprocess.Popen")
@@ -418,6 +421,168 @@ class DesktopTests(Sandbox):
         self.popen.assert_not_called()
 
 
+class ConfigPrivacyTests(Sandbox):
+    def setUp(self):
+        super().setUp()
+        self.path = self.home / "config/WhispersInTheCourt/config.json"
+        default = patch.object(config, "_default_config_path", return_value=self.path)
+        default.start()
+        self.addCleanup(default.stop)
+        for name, value in (("discover_user_dir", None), ("discover_game_dir", None),
+                            ("discover_player2_port", 4315)):
+            mocked = patch.object(config, name, return_value=value)
+            mocked.start()
+            self.addCleanup(mocked.stop)
+
+    def existing(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.parent.chmod(0o755)
+        self.path.parent.chmod(0o755)
+        self.path.write_text('{"gemini_api_key": "fixture-only", "language": "English"}')
+        self.path.chmod(0o644)
+
+    def actions(self):
+        return (lambda: config.save(config.Config(gemini_api_key="fixture-only")),
+                lambda: config.set_option("language", "Italiano"), config.load)
+
+    def test_save_private_new_directory_and_file_under_umask022(self):
+        previous = os.umask(0o022)
+        try:
+            config.save(config.Config(gemini_api_key="fixture-only"))
+        finally:
+            os.umask(previous)
+        self.assertEqual(self.path.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_set_option_private_new_directory_and_file_under_umask022(self):
+        previous = os.umask(0o022)
+        try:
+            config.set_option("gemini_api_key", "fixture-only")
+        finally:
+            os.umask(previous)
+        self.assertEqual(self.path.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_save_tightens_existing0644_in_owned0755_directory(self):
+        self.existing()
+        config.save(config.Config(gemini_api_key="fixture-only"))
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_set_option_tightens_existing0644_preserving_other_keys(self):
+        import json
+        self.existing()
+        config.set_option("language", "Italiano")
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(self.path.read_text())["gemini_api_key"], "fixture-only")
+
+    def test_startup_load_tightens_existing0644_before_reading(self):
+        self.existing()
+        original = os.read
+        def private_read(fd, size):
+            if os.fstat(fd).st_ino == self.path.stat().st_ino:
+                self.assertEqual(os.fstat(fd).st_mode & 0o777, 0o600)
+            return original(fd, size)
+        with patch("os.read", side_effect=private_read):
+            cfg = config.load()
+        self.assertEqual(cfg.gemini_api_key, "fixture-only")
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_symlink_config_rejected_without_read_write_or_chmod_target(self):
+        self.path.parent.mkdir(parents=True)
+        victim = self.home / "victim"
+        victim.write_text('{"gemini_api_key": "do-not-read"}')
+        victim.chmod(0o644)
+        self.path.symlink_to(victim)
+        for action in self.actions():
+            with self.subTest(action=action), self.assertRaises(OSError):
+                action()
+            self.assertEqual(victim.read_text(), '{"gemini_api_key": "do-not-read"}')
+            self.assertEqual(victim.stat().st_mode & 0o777, 0o644)
+
+    def test_symlink_ancestor_rejected_without_creating_app_directory(self):
+        target = self.home / "real"
+        target.mkdir()
+        (self.home / "config").symlink_to(target, target_is_directory=True)
+        for action in self.actions():
+            with self.subTest(action=action), self.assertRaises(OSError):
+                action()
+            self.assertFalse((target / "WhispersInTheCourt").exists())
+
+    def test_nonsticky_writable_ancestor_rejected(self):
+        parent = self.home / "config"
+        parent.mkdir()
+        parent.chmod(0o777)
+        for action in self.actions():
+            with self.subTest(action=action), self.assertRaises(OSError):
+                action()
+            self.assertFalse(self.path.parent.exists())
+
+    def test_foreign_config_rejected_without_read_write_or_chmod(self):
+        self.existing()
+        original = os.fstat
+        inode = self.path.stat().st_ino
+        def foreign(fd):
+            result = original(fd)
+            if result.st_ino == inode:
+                values = list(result)
+                values[4] = os.geteuid() + 1
+                return os.stat_result(values)
+            return result
+        for action in self.actions():
+            with self.subTest(action=action), patch("os.fstat", side_effect=foreign), self.assertRaises(OSError):
+                action()
+            self.assertEqual(self.path.stat().st_mode & 0o777, 0o644)
+            self.assertIn("fixture-only", self.path.read_text())
+
+    def test_hardlinked_config_rejected_without_chmod_other_name(self):
+        self.existing()
+        other = self.home / "other-name"
+        os.link(self.path, other)
+        for action in self.actions():
+            with self.subTest(action=action), self.assertRaises(OSError):
+                action()
+            self.assertEqual(other.stat().st_mode & 0o777, 0o644)
+
+    def test_atomic_write_failure_preserves_original_and_removes_private_temp(self):
+        self.existing()
+        before = self.path.read_text()
+        def rejected(source, destination, *, src_dir_fd, dst_dir_fd):
+            self.assertEqual(src_dir_fd, dst_dir_fd)
+            info = os.stat(source, dir_fd=src_dir_fd, follow_symlinks=False)
+            self.assertEqual(info.st_mode & 0o777, 0o600)
+            self.assertEqual(destination, self.path.name)
+            raise OSError("fixture replacement failure")
+        with patch("os.replace", side_effect=rejected), self.assertRaises(OSError):
+            config.save(config.Config(gemini_api_key="new-fixture-only"))
+        self.assertEqual(self.path.read_text(), before)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+
+    def test_temp_collision_does_not_delete_uncreated_file(self):
+        self.existing()
+        collision = self.path.parent / (".courtbrain-config-" + "00" * 16)
+        collision.write_text("keep")
+        with patch("os.urandom", return_value=b"\0" * 16), self.assertRaises(FileExistsError):
+            config.save(config.Config())
+        self.assertTrue(collision.exists(), "Exclusive-create failure must not unlink another file")
+        self.assertEqual(collision.read_text(), "keep")
+
+    def test_fifo_config_rejected_without_blocking(self):
+        self.path.parent.mkdir(parents=True)
+        os.mkfifo(self.path)
+        for action in self.actions():
+            with self.subTest(action=action), self.assertRaises(OSError):
+                action()
+
+    def test_unsafe_owned_config_directory_is_not_silently_chmodded(self):
+        self.existing()
+        self.path.parent.chmod(0o777)
+        for action in self.actions():
+            with self.subTest(action=action), self.assertRaises(OSError):
+                action()
+            self.assertEqual(self.path.parent.stat().st_mode & 0o777, 0o777)
+            self.assertEqual(self.path.stat().st_mode & 0o777, 0o644)
+
+
 class LockTests(Sandbox):
     def lock(self, directory=None):
         linux = self.linux()
@@ -470,6 +635,53 @@ class LockTests(Sandbox):
         self.assertEqual(lockfile.read_text(), "keep")
         self.assertFalse(self.lock(Path("relative")).acquire())
 
+    def test_unsafe_ancestor_rename_cannot_split_live_locks(self):
+        parent = self.home / "public"
+        parent.mkdir()
+        parent.chmod(0o777)  # A foreign uid can rename children, despite private leaf modes.
+        directory = parent / "app"
+        first, second = self.lock(directory), self.lock(directory)
+        accepted = first.acquire()
+        split = False
+        if accepted:
+            directory.rename(parent / "old-app")
+            split = second.acquire()
+        self.assertFalse(split, "Ancestor rename allowed two live locks on different inodes")
+        self.assertFalse(accepted, "Nonsticky writable ancestor must fail closed before locking")
+
+    def test_symlink_ancestor_rejected_without_creating_target_files(self):
+        target = self.home / "real"
+        target.mkdir()
+        (self.home / "alias").symlink_to(target, target_is_directory=True)
+        self.assertFalse(self.lock(self.home / "alias/app").acquire())
+        self.assertFalse((target / "app").exists())
+
+    def test_safe_sticky_trusted_ancestor_and_private_leaf(self):
+        parent = self.home / "sticky"
+        parent.mkdir()
+        parent.chmod(0o1777)
+        first, second = self.lock(parent / "app"), self.lock(parent / "app")
+        self.assertTrue(first.acquire())
+        self.assertFalse(second.acquire())
+
+    def test_foreign_owned_ancestor_rejected(self):
+        parent = self.home / "foreign"
+        parent.mkdir()
+        leaf = parent / "app"
+        leaf.mkdir(mode=0o700)
+        original = os.fstat
+        inode = parent.stat().st_ino
+        def foreign(fd):
+            result = original(fd)
+            if result.st_ino == inode:
+                values = list(result)
+                values[4] = os.geteuid() + 1
+                return os.stat_result(values)
+            return result
+        with patch("os.fstat", side_effect=foreign):
+            self.assertFalse(self.lock(leaf).acquire())
+        self.assertFalse((leaf / "courtbrain.lock").exists())
+
     def test_foreign_owner_rejected(self):
         lock = self.lock()
         with patch("os.geteuid", return_value=os.geteuid() + 1):
@@ -489,6 +701,18 @@ class LockTests(Sandbox):
             self.assertFalse(lock.acquire())
         self.assertEqual((self.home / "locks/courtbrain.lock").read_text(), "replacement")
 
+    def test_ancestor_becomes_unsafe_during_acquisition_rejected(self):
+        import fcntl
+        parent = self.home / "parent"
+        parent.mkdir(mode=0o700)
+        lock = self.lock(parent / "app")
+        original = fcntl.flock
+        def changed(fd, operation):
+            original(fd, operation)
+            parent.chmod(0o777)
+        with patch("fcntl.flock", side_effect=changed):
+            self.assertFalse(lock.acquire())
+
     def test_unsafe_mode_change_during_acquisition_rejected(self):
         import fcntl
         lock = self.lock()
@@ -502,12 +726,47 @@ class LockTests(Sandbox):
     def test_bundle_holds_linux_lock_and_is_idempotent(self):
         linux = self.linux()
         self.assertTrue(hasattr(linux, "InstanceLock"))
-        with patch.object(bundle, "_LINUX_LOCK", None, create=True):
+        with patch.object(linux, "instance_lock_directory", return_value=self.home / "singleton", create=True), \
+                patch.object(bundle, "_LINUX_LOCK", None, create=True):
             self.assertTrue(bundle.single_instance())
             self.addCleanup(bundle._LINUX_LOCK.close)
             self.assertTrue(bundle.single_instance())
-            self.assertFalse(self.lock(bundle.config_path().parent).acquire())
+            self.assertFalse(self.lock(bundle._LINUX_LOCK.directory).acquire())
         self.popen.assert_not_called()
+
+    def test_different_xdg_config_and_home_roots_share_one_user_lock(self):
+        linux = self.linux()
+        # Never touch the real helper's /tmp path: exercise production locking in a fixture.
+        stable = self.home / "singleton"
+        with patch.object(linux, "instance_lock_directory", return_value=stable, create=True):
+            with patch.object(bundle, "_LINUX_LOCK", None):
+                self.assertTrue(bundle.single_instance())
+                first = bundle._LINUX_LOCK
+                self.addCleanup(first.close)
+            other_home = self.home / "other-home"
+            with patch.dict(os.environ, {"HOME": str(other_home),
+                                         "XDG_CONFIG_HOME": str(other_home / "other-config"),
+                                         "XDG_RUNTIME_DIR": str(other_home / "runtime"),
+                                         "TMPDIR": str(other_home / "temp")}), \
+                    patch.object(bundle, "_LINUX_LOCK", None):
+                accepted = bundle.single_instance()
+                second = bundle._LINUX_LOCK
+                self.addCleanup(second.close)
+                self.assertFalse(accepted, "Same effective user must not split locks by changing config/HOME")
+                first.close()
+                self.assertTrue(second.acquire())
+            self.assertFalse(bundle.config_path().parent.exists())
+
+    def test_default_lock_namespace_depends_only_on_effective_uid(self):
+        linux = self.linux()
+        self.assertTrue(hasattr(linux, "instance_lock_directory"), "Missing stable singleton namespace")
+        expected = Path("/tmp") / f"WhispersInTheCourt-{os.geteuid()}"
+        self.assertEqual(linux.instance_lock_directory(), expected)
+        with patch.dict(os.environ, {"HOME": "/ignored-home", "XDG_CONFIG_HOME": "/ignored-config",
+                                     "XDG_RUNTIME_DIR": "/ignored-runtime", "TMPDIR": "/ignored-temp"}):
+            self.assertEqual(linux.instance_lock_directory(), expected)
+        with patch("os.geteuid", return_value=os.geteuid() + 1):
+            self.assertNotEqual(linux.instance_lock_directory(), expected)
 
 
 if __name__ == "__main__":

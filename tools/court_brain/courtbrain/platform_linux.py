@@ -297,14 +297,73 @@ def launch_steam(app_id: str) -> bool:
         return False
 
 
+def instance_lock_directory() -> Path:
+    """One Court Brain namespace per effective uid in the shared filesystem.
+
+    Always use /tmp/WhispersInTheCourt-<euid>, independent of HOME, TMPDIR and
+    every XDG variable. /run/user may be absent (containers/non-login launches);
+    switching between runtime and fallback roots would itself permit split locks.
+    secure_directory requires trusted root/uid ancestry, permits a sticky temp
+    parent, and rejects foreign-owned precreation. There is no insecure fallback.
+    Distinct mount namespaces with private /tmp deliberately do not coordinate.
+
+    Good: ``InstanceLock(instance_lock_directory())`` for all game/config paths.
+    Bad: scope singleton identity to config storage or a mutable environment root.
+    """
+    return Path("/tmp") / f"WhispersInTheCourt-{os.geteuid()}"
+
+
+def secure_directory(directory: Path, *, create: bool = False) -> int:
+    """Open an owned leaf through a no-symlink, foreign-replacement-safe chain.
+
+    Root/effective-uid owners are trusted. Writable ancestors require the sticky
+    bit (their root/uid-owned children cannot be renamed by foreign users).
+    The leaf must belong to the effective uid and cannot be group/world writable.
+    Missing components, when requested, are created with mode 0700 via dirfds.
+    The caller owns the returned descriptor. Unsafe paths raise OSError.
+
+    Good: retain/close ``secure_directory(Path('/trusted/private'), create=True)``.
+    Bad: use a private leaf below a nonsticky 0777 parent, or resolve symlinks first.
+    """
+    directory = Path(directory)
+    if not directory.is_absolute() or ".." in directory.parts or directory == Path("/"):
+        raise OSError("An absolute, non-root directory without '..' is required")
+    uid = os.geteuid()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open("/", flags)
+    try:
+        for name in directory.parts[1:]:
+            parent = os.fstat(fd)
+            if (parent.st_uid not in (0, uid)
+                    or (parent.st_mode & 0o022 and not parent.st_mode & stat.S_ISVTX)):
+                raise OSError("Directory ancestor permits foreign replacement")
+            if create:
+                try:
+                    os.mkdir(name, mode=0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            child = os.open(name, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        leaf = os.fstat(fd)
+        if leaf.st_uid != uid or leaf.st_mode & 0o022:
+            raise OSError("Directory leaf is not owned and safe")
+        result, fd = fd, None
+        return result
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 class InstanceLock:
     """Non-blocking per-user flock, kept alive by this object's open descriptor.
 
-    The directory must be absolute, owned by the effective uid, not group/world
-    writable and not a symlink. The persistent lock is a private regular file;
+    secure_directory validates every ancestor against foreign replacement, not
+    just the owned leaf. The persistent lock is a private regular file;
     symlinks/hardlinks and foreign owners are rejected without writing content.
+    Root and same-uid actors are trusted; they can intentionally replace locks.
 
-    Good: retain ``lock = InstanceLock(config_dir)``; check ``lock.acquire()``.
+    Good: retain ``lock = InstanceLock(instance_lock_directory())``; check acquire.
     Bad: discard the lock owner or unlink courtbrain.lock after release (split locks).
     """
     def __init__(self, directory: Path):
@@ -323,11 +382,8 @@ class InstanceLock:
             return False
         dir_fd = fd = None
         try:
-            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-            dir_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            dir_fd = secure_directory(self.directory, create=True)
             directory_stat = os.fstat(dir_fd)
-            if directory_stat.st_uid != os.geteuid() or directory_stat.st_mode & 0o022:
-                return False
             fd = os.open("courtbrain.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
                          0o600, dir_fd=dir_fd)
             lock_stat = os.fstat(fd)
@@ -335,9 +391,14 @@ class InstanceLock:
                     or lock_stat.st_nlink != 1 or stat.S_IMODE(lock_stat.st_mode) != 0o600):
                 return False
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            # Recheck the anchored pathname: never claim a removed/replaced inode.
+            # Rewalk the full chain after flock: do not accept an ancestor that
+            # became unsafe or a removed/replaced directory during acquisition.
+            check_fd = secure_directory(self.directory)
+            try:
+                current_dir = os.fstat(check_fd)
+            finally:
+                os.close(check_fd)
             current = os.stat("courtbrain.lock", dir_fd=dir_fd, follow_symlinks=False)
-            current_dir = self.directory.lstat()
             final = os.fstat(fd)
             if ((current.st_dev, current.st_ino) != (lock_stat.st_dev, lock_stat.st_ino)
                     or (current_dir.st_dev, current_dir.st_ino) != (directory_stat.st_dev, directory_stat.st_ino)
