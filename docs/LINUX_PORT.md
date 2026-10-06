@@ -138,8 +138,9 @@ verification; installations used disposable fixtures only.
 - Installed game fonts are registered for this process only. An Xft-enabled Tk
   runtime is needed to use their TTF faces. The local ELF uses Python 3.12 and
   Tk 8.6/Xft; the uv-managed Python 3.14 Tk 9 runtime tested here lacks Xft and
-  falls back to a proportional core serif. No proprietary game fonts/art are
-  redistributed.
+  falls back to a proportional core serif. No additional proprietary game fonts
+  or runtime-copied assets are bundled. The unchanged upstream mod contains a
+  Paradox unit-ability DDS icon under the mod terms described in `NOTICE.md`.
 - Linux refuses mod installation/launch when EU5 is running or `/proc` detection
   is uncertain. This is a best-effort process check, not a lock preventing a
   separate Steam process from starting EU5 during a copy.
@@ -152,7 +153,7 @@ Tk selection, building and desktop-entry installation. The parity allowlist's
 
 ## Current verification
 
-- 121 tests passed with no skips under isolated Xvfb/Metacity and Python 3.12/Tk
+- 122 tests passed with no skips under isolated Xvfb/Metacity and Python 3.12/Tk
   8.6: platform fixtures, Windows API/argument mocks, source-style comparisons,
   real Tk ledger/panel/settings/editor, actual wheel scrolling, minimize/restore,
   private-config permissions and singleton namespace/ancestor regressions.
