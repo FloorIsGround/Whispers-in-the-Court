@@ -169,6 +169,9 @@ Tk selection, building and desktop-entry installation. The parity allowlist's
 - Highest GLIBC symbol among bundled ELF libraries is 2.38. The build host uses
   glibc 2.39; this does not establish portable support for older distributions,
   musl, other CPU architectures or every desktop library stack.
+- Independent UI/packaging review passed. Runtime review found singleton/config
+  privacy issues and a subsequent cleanup error-path leak; all were corrected,
+  regression-tested and independently re-reviewed without remaining blockers.
 - Upstream parity passes: only five upstream platform/UI/build files changed.
   Shared AI, prompts, action IDs, generators and mod assets remain unchanged.
 
