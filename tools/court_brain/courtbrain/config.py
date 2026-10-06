@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import tempfile
+import threading
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
@@ -155,23 +158,6 @@ def discover_game_dir() -> Path | None:
     return None
 
 
-def discover_player2_port() -> int:
-    """Player2 writes its port to APPDATA/game.player2.client/api.port.
-
-    The file is removed when the app exits cleanly, so its absence is also a
-    hint that Player2 is not running - but we still fall back to the
-    documented default rather than refusing to try.
-    """
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        f = Path(appdata) / "game.player2.client" / "api.port"
-        try:
-            return int(f.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
-            pass
-    return 4315
-
-
 @dataclass
 class Config:
     # --- where things are -------------------------------------------------
@@ -179,20 +165,17 @@ class Config:
     game_dir: str = ""
     mod_dir: str = ""          # <user_dir>/mod/WhispersInTheCourt
 
-    # --- Player2 ----------------------------------------------------------
-    player2_host: str = "127.0.0.1"
-    player2_port: int = 0      # 0 = discover
-    player2_game_key: str = "voices-of-the-court-eu5"
+    # --- text provider options (temperature/token cap apply to API-key providers) ---
     model_temperature: float = 0.85
     # Generous on purpose: the model's hidden reasoning counts against it.
     max_tokens: int = 3000
     request_timeout_s: float = 120.0
-    health_ping_s: float = 60.0
 
     # --- the AI that writes ---------------------------------------------------
-    # "player2" (default), or a cloud model with the player's own key: "gemini", "mistral",
+    # "chatgpt" (default), or a cloud model with the player's own key: "gemini", "mistral",
     # "openrouter" (any of hundreds of models through one key, paid by credits or free ones).
-    ai_provider: str = "player2"
+    ai_provider: str = "chatgpt"
+    chatgpt_model: str = ""  # choose from the signed-in account's catalog
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.1-flash-lite"   # free key: the most requests a day
     mistral_api_key: str = ""
@@ -201,6 +184,8 @@ class Config:
     openrouter_model: str = "google/gemini-3.1-flash-lite"   # the model Court Brain's prompts are tuned on
 
     # --- voice ------------------------------------------------------------
+    voice_provider: str = "none"
+    stt_enabled: bool = False
     tts_enabled: bool = False
     tts_voice_id: str = ""
 
@@ -300,11 +285,6 @@ class Config:
         )
 
     @property
-    def player2_base(self) -> str:
-        port = self.player2_port or discover_player2_port()
-        return f"http://{self.player2_host}:{port}/v1"
-
-    @property
     def reload_command(self) -> str:
         if self.reload_loc_command:
             return self.reload_loc_command
@@ -330,11 +310,19 @@ def load(path: str | os.PathLike[str] | None = None) -> Config:
     data: dict[str, Any] = {}
     if cfg_path.is_file():
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        migrated = migrate(data)
+        if migrated != data:
+            backup = cfg_path.with_suffix(cfg_path.suffix + ".pre-chatgpt.bak")
+            if not backup.exists():
+                shutil.copy2(cfg_path, backup)
+            _write_config(cfg_path, migrated)
+            data = migrated
 
     known = {f for f in Config.__dataclass_fields__}
     extra = {k: v for k, v in data.items() if k not in known}
     cfg = Config(**{k: v for k, v in data.items() if k in known})
     cfg.extra.update(extra)
+    cfg._config_path = cfg_path
 
     if not cfg.user_dir:
         found = discover_user_dir()
@@ -350,30 +338,51 @@ def load(path: str | os.PathLike[str] | None = None) -> Config:
             cfg.game_dir = str(found)
     if not cfg.mod_dir and cfg.user_dir:
         cfg.mod_dir = str(Path(cfg.user_dir) / "mod" / "WhispersInTheCourt")
-    if not cfg.player2_port:
-        cfg.player2_port = discover_player2_port()
     return cfg
+
+
+def migrate(data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate the removed companion without discarding unrelated settings."""
+    result = dict(data)
+    legacy = result.get("ai_provider", "player2") == "player2" or any(k.startswith("player2_") for k in result)
+    if result.get("ai_provider", "player2") == "player2":
+        result["ai_provider"] = "chatgpt"
+    if legacy:
+        result.update(voice_provider="none", tts_enabled=False, stt_enabled=False)
+    for key in list(result):
+        if key.startswith("player2_") or key == "health_ping_s":
+            result.pop(key)
+    return result
+
+
+_CONFIG_LOCK = threading.RLock()
+
+
+def _write_config(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".config-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def set_option(key: str, value: Any, path: str | os.PathLike[str] | None = None) -> None:
     """Change one setting in config.json, leaving everything else as the player wrote it."""
     cfg_path = Path(path) if path else _default_config_path()
-    data: dict[str, Any] = {}
-    if cfg_path.is_file():
-        try:
-            data = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except ValueError:
-            data = {}
-    data[key] = value
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    with _CONFIG_LOCK:
+        data = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.is_file() else {}
+        data[key] = value
+        _write_config(cfg_path, data)
 
 
 def save(cfg: Config, path: str | os.PathLike[str] | None = None) -> Path:
     cfg_path = Path(path) if path else _default_config_path()
     data = asdict(cfg)
-    data.pop("extra", None)
-    cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    extra = data.pop("extra", {})
+    _write_config(cfg_path, {**extra, **data})
     return cfg_path
 
 

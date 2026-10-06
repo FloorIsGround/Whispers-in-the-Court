@@ -77,6 +77,7 @@ class Mailbox:
         self.on_delivered: Callable[[Any], None] | None = None
         self.on_dropped: Callable[[str], None] | None = None
         self.on_note: Callable[[str], None] | None = None
+        self.before_send: Callable[[], None] | None = None
         # None: not yet known whether the game reports the text it loaded; True: it does.
         self.stamp_check: bool | None = None
         # The bridge polls every 3 s while var:votc_poll_fast is up, every 12 s otherwise.
@@ -104,6 +105,8 @@ class Mailbox:
     def send(self, script: list[str], *, loc: dict[str, str] | None = None, label: str = "",
              save: bool = False, mark: bool = True) -> None:
         """Queue a mail. save=True also has the game write save games/votc_world.eu5."""
+        if self.before_send:
+            self.before_send()
         with self._lock:
             if loc and script:
                 # Text first, on its own: the game must have reloaded the new

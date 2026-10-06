@@ -64,7 +64,7 @@ them gold, and stores them as PNGs in Court Brain's folder (`gfx_v3/`). If
 they are missing, the panel is drawn without them.
 
 `ledger.py` is the **Court Brain** window that replaces the console: status
-(game, Player2, campaign, date, read every second from `CourtBrain.status()`
+(game, selected AI provider, campaign, date, read every second from `CourtBrain.status()`
 without network calls) and a colour-coded log, also written to
 `court_brain.log`. `run_court_brain.bat` starts it with `pyw` (no console);
 startup errors are written to `court_brain_crash.log` and shown in a message.
@@ -154,9 +154,17 @@ the variables), using a code translated in `votc_orders_l_english.yml`.
 - **Prompts** (`prompts.py`): CRAFT (distinct voices, no stock phrases),
   IDENTITY (each realm has its own identity), DECREE_TASK (government type ×
   strength of the Crown).
-- **Player2**: the model reasons before answering, and that reasoning uses
-  `max_tokens`. If the limit is exhausted, the response is empty. The default
-  is 3000; each empty response doubles the limit (up to 8000).
+- **Text providers** (`ai/`): the controller calls `complete_json`. ChatGPT
+  uses app-owned OAuth credentials and Responses SSE; API-key providers use
+  Chat Completions. Only completed, schema-valid results reach feature logic.
+  Provider changes and campaign rewinds invalidate in-flight work. Existing
+  action validation still governs what can reach the game.
+- **Voice** (`voice.py`): an independent capability, disabled by default. No
+  speech service or desktop AI companion is needed for typed play.
+
+See [ChatGPT integration](CHATGPT.md) for authentication, model selection,
+credentials and request behavior. The game-definition catalog named `codex.py`
+is unrelated to OpenAI Codex; this fork does not require the Codex CLI.
 
 ## Reference files
 

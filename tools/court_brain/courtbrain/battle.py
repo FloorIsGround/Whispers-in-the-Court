@@ -31,7 +31,7 @@ from typing import Any
 from . import gamedate, prompts
 from .drawer import Header
 from .mailbox import with_gist
-from .player2 import Player2Error
+from .ai import AIError
 from .protocol import Record
 
 # ----------------------------------------------------------------------------
@@ -726,7 +726,7 @@ class BattleCommand:
                                  player=prompts.player_block("battles", "narration", "setting", "avoid"))
         try:
             data = self._ask(task, BRIEF_SCHEMA, "votc_battle_brief", 2600, guide="battle_field")
-        except Player2Error as exc:
+        except AIError as exc:
             self.b.log(f"Battle briefing not written: {exc}")
             data = {"title": self.title, "briefing": self._field_text(fld), "plans": []}
         if session is not self.b.session or not self.live:
@@ -768,7 +768,7 @@ class BattleCommand:
                                 lang=self._lang()) + "\n" + prompts.player_block("battles")
         try:
             data = self._ask(task, PLAN_SCHEMA, "votc_battle_plan", 1800, guide="battle_judge")
-        except Player2Error as exc:
+        except AIError as exc:
             self.b.log(f"Battle order not judged: {exc}")
             data = {"soundness": 5, "reading": "", "effects": [], "personal_risk": 0,
                     "summary": order[:200], "watch": ""}
@@ -944,7 +944,7 @@ class BattleCommand:
             player=prompts.player_block("battles", "narration", "avoid"))
         try:
             data = self._ask(task, MOMENT_SCHEMA, "votc_battle_moment", 3200, guide="battle_moment")
-        except Player2Error as exc:
+        except AIError as exc:
             self.b.log(f"Battle moment not written: {exc} - the battle runs on.")
             self._go([])
             return
@@ -1042,7 +1042,7 @@ class BattleCommand:
                                  lang=self._lang(), player=prompts.player_block("battles", "narration", "avoid"))
         try:
             data = self._ask(task, AFTER_SCHEMA, "votc_battle_after", 3000, guide="battle_end")
-        except Player2Error as exc:
+        except AIError as exc:
             self.b.log(f"Account of the battle not written: {exc}")
             data = {}
         title = str(data.get("title") or self.title)[:70]

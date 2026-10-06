@@ -51,7 +51,7 @@ votc_show_knock = {
 	trigger_event_non_silently = { id = votc.400 days = 1 }
 }
 
-# The middleware speaking for itself (Player2 unreachable, and so on).
+# The middleware speaking for itself (AI provider unreachable, and so on).
 votc_show_notice = {
 	trigger_event_non_silently = votc.900
 }

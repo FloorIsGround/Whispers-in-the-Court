@@ -6,7 +6,7 @@ It checks the mod, installs PyInstaller for the build if it is missing (the
 players never need it), draws the program's icon, and writes
 dist/WhispersInTheCourt.exe. That file is all a player downloads: started, it
 installs or updates the mod in EU5's mod folder and opens the Court Brain
-window. Player2 remains a separate app, as it always was.
+window. Text providers are built in; no separate AI desktop app is required.
 """
 
 from __future__ import annotations
@@ -101,6 +101,7 @@ def make_icon(path: Path) -> None:
 # ----------------------------------------------------------------------
 
 def main() -> int:
+    subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(BRAIN / "requirements.txt")], check=True)
     check = subprocess.run([sys.executable, str(ROOT / "tools" / "validate_mod.py")])
     if check.returncode != 0:
         print("The mod has problems: fix them before building the exe.")
@@ -118,6 +119,7 @@ def main() -> int:
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
         "--name", NAME, "--icon", str(icon),
         "--paths", str(BRAIN),
+        "--collect-data", "jsonschema_specifications",
         "--add-data", f"{MOD}{';' if sys.platform == 'win32' else ':'}mod/WhispersInTheCourt",
         "--add-data", f"{BRAIN / 'courtbrain' / 'icon.ico'}{';' if sys.platform == 'win32' else ':'}courtbrain",
         "--distpath", str(DIST), "--workpath", str(BUILD / "pyinstaller"), "--specpath", str(BUILD),

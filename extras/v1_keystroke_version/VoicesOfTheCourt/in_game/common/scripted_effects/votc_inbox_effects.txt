@@ -76,7 +76,7 @@ votc_push_envoy = {
 }
 
 # Shown when the middleware itself has something to say - it lost the
-# Player2 app, the model refused, the request timed out. Better an honest
+# the AI provider app, the model refused, the request timed out. Better an honest
 # notice in the game than a conversation that silently never arrives.
 votc_push_notice = {
 	trigger_event_non_silently = votc.900

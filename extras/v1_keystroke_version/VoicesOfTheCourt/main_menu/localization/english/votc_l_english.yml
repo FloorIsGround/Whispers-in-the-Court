@@ -11,7 +11,7 @@
 
  # --- switching the mod on ----------------------------------------------
  votc_open_court:0 "Open the Court to Voices"
- votc_open_court_desc:0 "Let the people of your court speak for themselves. Requires the Court Brain middleware and the Player2 app to be running.\n\n#T What this enables#!\n· Audiences with anyone at court, and with foreign courts through an envoy.\n· The Crown Council, which can issue real edicts.\n· Royal progresses through your own lands.\n· A chronicle that narrates what your decisions actually did."
+ votc_open_court_desc:0 "Let the people of your court speak for themselves. Requires the Court Brain middleware and the the AI provider app to be running.\n\n#T What this enables#!\n· Audiences with anyone at court, and with foreign courts through an envoy.\n· The Crown Council, which can issue real edicts.\n· Royal progresses through your own lands.\n· A chronicle that narrates what your decisions actually did."
  votc_close_court:0 "Dismiss the Voices"
  votc_close_court_desc:0 "Stop generating court life. Nothing already granted is taken away; the mod simply goes quiet."
  votc_resync:0 "Send Word to the Chancery"
