@@ -557,6 +557,42 @@ class ConfigPrivacyTests(Sandbox):
         self.assertEqual(self.path.read_text(), before)
         self.assertEqual(list(self.path.parent.iterdir()), [self.path])
 
+    def test_atomic_cleanup_failure_closes_directory_and_preserves_primary_error(self):
+        import errno
+        config.save(config.Config(gemini_api_key="fixture-only"))
+        before = self.path.read_bytes()
+        primary = OSError("fixture replacement failure")
+        secondary = PermissionError("fixture cleanup failure")
+        with patch("os.replace", side_effect=primary) as replace, \
+                patch("os.unlink", side_effect=secondary) as unlink, \
+                self.assertRaises(OSError) as raised:
+            config.save(config.Config(gemini_api_key="new-fixture-only"))
+        directory_fd = replace.call_args.kwargs["src_dir_fd"]
+        temporary = replace.call_args.args[0]
+        try:
+            self.assertEqual(replace.call_args.kwargs["dst_dir_fd"], directory_fd)
+            unlink.assert_called_once_with(temporary, dir_fd=directory_fd)
+            with self.subTest(check="primary_error_identity"):
+                self.assertIs(raised.exception, primary)
+            with self.subTest(check="directory_fd_closed"):
+                with self.assertRaises(OSError) as closed:
+                    os.fstat(directory_fd)
+                self.assertEqual(closed.exception.errno, errno.EBADF)
+            self.assertEqual(self.path.read_bytes(), before)
+            self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+            leftover = self.path.parent / temporary
+            self.assertEqual(leftover.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(set(self.path.parent.iterdir()), {self.path, leftover})
+        finally:
+            # Close the buggy implementation's leak after RED, with mocks stopped.
+            try:
+                os.fstat(directory_fd)
+            except OSError as error:
+                if error.errno != errno.EBADF:
+                    raise
+            else:
+                os.close(directory_fd)
+
     def test_temp_collision_does_not_delete_uncreated_file(self):
         self.existing()
         collision = self.path.parent / (".courtbrain-config-" + "00" * 16)

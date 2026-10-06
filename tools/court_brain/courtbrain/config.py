@@ -419,12 +419,19 @@ def _write_private_config(path: Path, text: str) -> None:
         temporary = None
         os.fsync(directory_fd)
     finally:
-        if temporary is not None:
-            try:
-                os.unlink(temporary, dir_fd=directory_fd)
-            except FileNotFoundError:
-                pass
-        os.close(directory_fd)
+        primary_error = sys.exc_info()[1]
+        try:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary, dir_fd=directory_fd)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    # Cleanup must not replace the original write/replace failure.
+                    if primary_error is None:
+                        raise
+        finally:
+            os.close(directory_fd)
 
 
 def load(path: str | os.PathLike[str] | None = None) -> Config:
