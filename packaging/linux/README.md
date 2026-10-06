@@ -1,18 +1,31 @@
 # Local native Linux packaging
 
-This is a downstream, local-only packaging path, not a public release or a
-cross-platform CI workflow. The companion runs as native Linux Python/Tk or a
-native ELF executable: it does **not** need Wine. EU5/Steam/Proton and Player2
-(or another configured AI provider) remain separate; packaging does not supply
-or configure those services. The original Court Brain entry point and UI are
-used, not replaced by a web UI.
+This is a downstream packaging path maintained in
+[FloorIsGround's fork](https://github.com/FloorIsGround/Whispers-in-the-Court),
+not a public binary release or cross-platform CI workflow. The companion runs
+as native Linux Python/Tk or a native ELF executable and does **not** need Wine.
+EU5/Steam/Proton and the configured ChatGPT/cloud account remain separate;
+packaging does not supply those services. Player2 was removed by the maintained
+source fork. The existing Tk entry point/UI are retained, not replaced by a web UI.
 
 ## Launch the unpacked source
 
-Keep the repository layout intact. Python **3.10 or newer** with a working
+Keep the repository layout intact. Python **3.11 or newer** with a working
 `tkinter`/Tcl/Tk installation is required. A graphical session (X11, or XWayland
-under Wayland) is needed for the window. Court Brain's source dependencies are
-the standard library; no automatic package installation is performed.
+under Wayland) is needed for the window. Install the maintained source fork's
+pinned JWT/cryptography/JSON-schema dependencies into your selected environment
+before launching. The launcher performs no automatic package installation.
+
+For example, using an existing Python with Tk:
+
+```sh
+uv venv --python /usr/bin/python3 .venv
+uv pip install --python .venv/bin/python -r tools/court_brain/requirements.txt
+uv run --no-project --no-sync --python .venv/bin/python packaging/linux/launch.py
+```
+
+Python 3.12/Tk 8.6 is the exercised Xft build baseline; 3.11 is the declared
+source minimum, not a separately executed release-matrix target.
 
 From the repository root:
 
@@ -29,11 +42,12 @@ mod. If Tk is missing, choose another Python or arrange Tcl/Tk support yourself
 (e.g. the system `python3-tk` package on Debian/Ubuntu). An import check does not
 prove the display server is reachable.
 
-With an **already installed** uv-managed Python (3.14 is an example):
+With an **already prepared** uv-selected environment containing the pinned
+requirements (the local `.venv` uses Python 3.14):
 
 ```sh
-uv run --offline --no-python-downloads --no-project --no-sync --python 3.14 packaging/linux/launch.py --launcher-check
-uv run --offline --no-python-downloads --no-project --no-sync --python 3.14 packaging/linux/launch.py
+uv run --offline --no-python-downloads --no-project --no-sync --python .venv/bin/python packaging/linux/launch.py --launcher-check
+uv run --offline --no-python-downloads --no-project --no-sync --python .venv/bin/python packaging/linux/launch.py
 ```
 
 These uv flags prevent downloads, project dependency synchronization and hidden
@@ -53,7 +67,7 @@ write settings/state and install or update the mod in the configured EU5 user
 folder, and may connect to the configured provider. Close the game before
 updates. For verification, use a disposable config, isolated user directories,
 no real saves, and a network-disabled sandbox. `--check` is an application check
-that may contact Player2; it is **not** a packaging-only safety check.
+that may contact the configured AI provider; it is **not** a packaging-only check.
 
 ## Build the native executable
 

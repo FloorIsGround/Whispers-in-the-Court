@@ -277,7 +277,7 @@ votc.600 = {
 # 900 - The middleware has something to say
 # =====================================================================
 #
-# Shown when Court Brain cannot reach the Player2 app, the model refused, or
+# Shown when Court Brain cannot reach the the AI provider app, the model refused, or
 # a request timed out. An honest notice beats a conversation that silently
 # never arrives.
 

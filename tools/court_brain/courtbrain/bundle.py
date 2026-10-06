@@ -26,7 +26,6 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Callable
 
@@ -253,7 +252,7 @@ def ensure_mod(cfg, log: Callable[[str], None]) -> bool | None:
 
 def steam_app_id(game_dir: str) -> str:
     """EU5's Steam id, from the library manifest beside the game when it can be read."""
-    if game_dir:
+    if game_dir and len(Path(game_dir).parents) >= 2:
         steamapps = Path(game_dir).parents[1]
         folder = Path(game_dir).name
         for manifest in steamapps.glob("appmanifest_*.acf"):
@@ -266,6 +265,30 @@ def steam_app_id(game_dir: str) -> str:
                 if m:
                     return m.group(1)
     return EU5_APP_ID
+
+
+def steam_executable() -> Path | None:
+    """Find the Windows Steam client, including installations outside Program Files."""
+    if os.name != "nt":
+        return None
+    candidates = []
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            for name in ("SteamExe", "SteamPath"):
+                try:
+                    value, _kind = winreg.QueryValueEx(key, name)
+                    if isinstance(value, str) and value.strip():
+                        path = Path(value)
+                        candidates.append(path if name == "SteamExe" else path / "steam.exe")
+                except OSError:
+                    pass
+    except (ImportError, OSError):
+        pass
+    for root in (os.environ.get("ProgramFiles(x86)"), os.environ.get("ProgramFiles")):
+        if root:
+            candidates.append(Path(root) / "Steam" / "steam.exe")
+    return next((path for path in candidates if path.is_file()), None)
 
 
 DEBUG_HELP = ("In Steam: right-click Europa Universalis V > Properties > Launch Options, write -debug_mode, "
@@ -318,12 +341,12 @@ def _launch_linux_game(cfg, log: Callable[[str], None]) -> None:
 
 
 def launch_game(cfg, log: Callable[[str], None]) -> None:
-    """Start EU5 with -debug_mode, which the mod needs to load its texts.
+    """Ask Steam to start EU5 with the debug option required by the bridge.
 
-    The game's own executable is started directly, with the option on its command
-    line: Steam's steam://run/<id>//<options> link asks the player to confirm, and
-    the option is easily lost on the way (testers' games started without it). Steam
-    must be running first, or the game restarts itself through Steam without it."""
+    Steam supplies the game's app context for DLC/ownership checks. Starting
+    eu5.exe directly can leave Steamworks uninitialized even with Steam open.
+    Prefer the client's argument interface; use its URI handler as a fallback.
+    Neither path waits for Steam login or game startup on the UI thread."""
     if sys.platform.startswith("linux"):
         _launch_linux_game(cfg, log)
         return
@@ -332,30 +355,20 @@ def launch_game(cfg, log: Callable[[str], None]) -> None:
             "Start EU5 again. " + DEBUG_HELP)
         return
     ensure_mod(cfg, log)            # an update that waited for the game to close goes in now
-    exe = Path(cfg.game_dir or ".") / "binaries" / "eu5.exe"
-    if cfg.game_dir and exe.is_file() and os.name == "nt":
-        if not _running("steam.exe"):
-            log("Starting Steam first…")
-            try:
-                os.startfile("steam://open/main")      # noqa: S606 - Steam's own protocol
-            except OSError:
-                pass
-            for _ in range(60):
-                if _running("steam.exe"):
-                    time.sleep(8)                      # let Steam sign in before the game asks it
-                    break
-                time.sleep(1)
+    app_id = steam_app_id(cfg.game_dir)
+    steam = steam_executable()
+    if steam is not None:
         try:
-            subprocess.Popen([str(exe), "-debug_mode"], cwd=str(exe.parent), close_fds=True,
-                             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
-            log("Starting EU5 with -debug_mode.")
+            subprocess.Popen([str(steam), "-applaunch", app_id, "-debug_mode"], cwd=str(steam.parent),
+                             close_fds=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            log("Asked Steam to start EU5 with -debug_mode. Complete any Steam sign-in or launch prompt.")
             return
         except OSError as exc:
-            log(f"Could not start {exe} ({exc}); trying through Steam.")
-    url = f"steam://run/{steam_app_id(cfg.game_dir)}//-debug_mode/"
+            log(f"Could not start the Steam client ({exc}); trying its launch link.")
+    url = f"steam://run/{app_id}//-debug_mode/"
     try:
         os.startfile(url)                       # noqa: S606 - Steam's own protocol
-        log("Starting EU5 with -debug_mode through Steam (if Steam asks to confirm the option, accept).")
+        log("Asked Steam to start EU5 with -debug_mode (if Steam asks to confirm the option, accept).")
     except (AttributeError, OSError) as exc:
         log(f"WARNING: could not start EU5 ({exc}). Start it yourself with -debug_mode. " + DEBUG_HELP)
 

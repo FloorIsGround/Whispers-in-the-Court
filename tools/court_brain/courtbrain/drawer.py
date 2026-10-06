@@ -469,6 +469,7 @@ class Callbacks:
     on_suggest: Callable[[], None] = lambda: None
     listen_start: Callable[[], bool] = lambda: False
     listen_stop: Callable[[], str] = lambda: ""
+    can_listen: Callable[[], bool] = lambda: False
 
 
 @dataclass
@@ -589,6 +590,9 @@ class Drawer:
         self.b_speak.pack(side="left")
         self.b_mic = Plate(row, "\U0001F399  Dictate", self._toggle_mic, font=f.btn, bg=NAVY_LO)
         self.b_mic.pack(side="left", padx=8)
+        if not self.cb.can_listen():
+            self.b_mic.set_text("Voice disabled")
+            self.b_mic.configure(state="disabled", cursor="arrow")
         self.b_leave = Plate(row, "Dismiss", lambda: self.cb.on_close(), font=f.btn, bg=NAVY_LO)
         self.b_leave.pack(side="right")
         self._show_placeholder()
@@ -1099,13 +1103,16 @@ class Drawer:
         self.cb.on_send(text)
 
     def _toggle_mic(self) -> None:
+        if not self.cb.can_listen():
+            self.set_status("Voice is disabled. Type your ruler's words.")
+            return
         if not self._listening:
             if self.cb.listen_start():
                 self._listening = True
                 self.b_mic.set_text("■  Stop")
-                self.set_status("Listening… (the microphone is the Player2 app's)")
+                self.set_status("Listening...")
             else:
-                self.set_status("Player2 did not start the microphone.")
+                self.set_status("The voice provider did not start the microphone.")
             return
         self._listening = False
         self.b_mic.set_text("\U0001F399  Dictate")

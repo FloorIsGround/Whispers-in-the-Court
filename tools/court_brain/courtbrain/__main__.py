@@ -19,7 +19,8 @@ from . import config as config_mod
 from . import gamelogs
 from .app import CourtBrain
 from .codex import build as build_codex
-from .player2 import Player2Client
+from .ai import AIError, make_client
+from .ai.chatgpt_auth import ChatGPTAuth
 
 
 def _utf8_console() -> None:
@@ -42,7 +43,7 @@ def cmd_check(cfg: config_mod.Config) -> int:
     print(f"EU5 user folder     : {cfg.user_dir or 'NOT FOUND'}")
     print(f"EU5 installation    : {cfg.game_dir or 'NOT FOUND'}")
     print(f"Mod                 : {cfg.mod_dir or 'NOT FOUND'}")
-    print(f"Player2             : {cfg.player2_base}\n")
+    print(f"AI provider         : {cfg.ai_provider}\nVoice               : disabled\n")
 
     if not cfg.user_dir or not cfg.user_path.is_dir():
         ok = False
@@ -56,12 +57,13 @@ def cmd_check(cfg: config_mod.Config) -> int:
     else:
         print("  [ok] Mod installed.")
 
-    health = Player2Client(cfg.player2_base, cfg.player2_game_key, timeout=10).health()
-    if health:
-        print(f"  [ok] Player2 answers (version {health.get('client_version', '?')}).")
-    else:
-        ok = False
-        print("  [!] Player2 does not answer: open the Player2 app and log in.")
+    client = make_client(cfg)
+    try:
+        connected, detail = client.check()
+        ok = ok and connected
+        print(f"  [{'ok' if connected else '!'}] {client.NAME}: {detail}")
+    finally:
+        client.close()
 
     if cfg.game_dir:
         codex = build_codex(cfg.game_dir, cfg.game_language)
@@ -129,8 +131,9 @@ def cmd_run(cfg: config_mod.Config, *, panel: bool) -> int:
             on_close=brain.on_close,
             on_hub=brain.on_hub,
             on_suggest=brain.on_suggest,
-            listen_start=lambda: brain.client.listen_start(30.0),
-            listen_stop=brain.client.listen_stop,
+            listen_start=lambda: brain.voice.listen_start(30.0),
+            listen_stop=lambda: brain.voice.listen_stop(),
+            can_listen=lambda: cfg.stt_enabled and brain.voice.can_listen,
         ),
         game_dir=cfg.game_dir,
         cache_dir=cfg.state_dir,
@@ -140,7 +143,8 @@ def cmd_run(cfg: config_mod.Config, *, panel: bool) -> int:
     ledger = Ledger(drawer.root, drawer.art, cfg=cfg, log_file=cfg.state_dir / "court_brain.log",
                     data_dir=cfg.state_dir, instructions_file=instructions, status=brain.status,
                     on_frequency=brain.set_frequency, on_launch=lambda: launch_game(cfg, brain.log),
-                    save_option=config_mod.set_option, on_provider=brain.set_provider)
+                    save_option=lambda k, v: config_mod.set_option(k, v, getattr(cfg, "_config_path", None)),
+                    on_provider=brain.set_provider, auth=brain.auth, on_auth_busy=brain.pause_ai)
 
     def log(message: str) -> None:
         print(message, flush=True)
@@ -212,6 +216,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="check the installation")
     parser.add_argument("--install", action="store_true", help="install the mod into EU5's mod folder")
     parser.add_argument("--saves", action="store_true", help="show the memory attached to each save")
+    parser.add_argument("--chatgpt-connect", action="store_true", help="sign in to ChatGPT in your browser")
+    parser.add_argument("--chatgpt-models", action="store_true", help="list models available to the connected ChatGPT account")
+    parser.add_argument("--ai-test", action="store_true", help="make one small structured request using the selected AI provider")
     parser.add_argument("--no-panel", action="store_true", help="run without the side panel")
     parser.add_argument("--language", help="the language the AI writes in (English, Italiano, ...)")
     args = parser.parse_args(argv)
@@ -219,6 +226,34 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config_mod.load(args.config)
     if args.language:
         cfg.language = args.language
+    if args.chatgpt_connect or args.chatgpt_models or args.ai_test:
+        try:
+            auth = ChatGPTAuth()
+            if args.chatgpt_connect:
+                active, _ = auth.accounts()
+                print("Complete ChatGPT sign-in in the browser. Court Brain will wait up to 15 minutes.", flush=True)
+                print(auth.sign_in(active))
+            if args.chatgpt_models:
+                from .ai.chatgpt import ChatGPTClient
+                client = ChatGPTClient(auth)
+                try:
+                    for item in client.models():
+                        print(f"{item['id']} - {item['name']}")
+                finally:
+                    client.close()
+            if args.ai_test:
+                client = make_client(cfg, auth=auth)
+                try:
+                    client.complete_json([{"role": "user", "content": "Return an object with ready set to true."}],
+                        {"type": "object", "properties": {"ready": {"type": "boolean", "enum": [True]}},
+                         "required": ["ready"], "additionalProperties": False}, schema_name="connection_test", retries=0)
+                    print("Completed a schema-valid AI response.")
+                finally:
+                    client.close()
+            return 0
+        except AIError as exc:
+            print(str(exc))
+            return 1
     if args.check:
         return cmd_check(cfg)
     if args.install:

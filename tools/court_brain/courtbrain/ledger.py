@@ -3,7 +3,7 @@
 A window in the game's manner, beside the game rather than over it. The
 first time it opens it walks the player through the choices that shape the
 campaign (the language the AI writes in, how often events come, how hard the
-court is); afterwards it shows whether the game, the bridge and Player2
+court is); afterwards it shows whether the game, the bridge and the AI provider
 answer, which campaign and date the court is at, and the running record of
 what Court Brain does. From here the player can also rewrite the AI's
 instructions (see InstructionsEditor) and start EU5.
@@ -53,19 +53,12 @@ DIFF_CHOICES = (
                                "less; rivals strike when you stumble, and crises start early."),
 )
 FREQ_NAMES = {k: n for k, n, _ in FREQ_CHOICES}
-# Who writes: Player2 by default, or a cloud model with the player's own (free) key.
+# Text generation is independent of optional speech.
 PROVIDER_CHOICES = (
-    ("player2", "Player2 (default)", "The Player2 app you already use: nothing to set up. It spends its credits "
-                                     "as you play; its free models cost nothing."),
-    ("gemini", "Google Gemini - with your own free key", "Gemini through a key of your own from Google AI "
-               "Studio: free within Google's limits (shown in AI Studio). gemini-3.1-flash-lite allows the most "
-               "play a day for free; bigger Flash models write better but allow far fewer requests. On the free "
-               "plan Google may use what is sent to improve its products."),
-    ("openrouter", "OpenRouter - one key, hundreds of models", "Any model on OpenRouter (Gemini, DeepSeek, "
-                   "Claude, GPT, Qwen, Mistral...) with one key of your own, paid with OpenRouter credits - a few "
-                   "cents an evening with the default google/gemini-3.1-flash-lite; models ending in \":free\" "
-                   "cost nothing but are slower and limited. Write the model as OpenRouter names it "
-                   "(maker/model)."),
+    ("chatgpt", "ChatGPT plan", "Connect your eligible ChatGPT account; no API key needed."),
+    ("gemini", "Google Gemini", "Use your own Google AI Studio API key and its usage limits."),
+    ("mistral", "Mistral", "Use your own Mistral API key."),
+    ("openrouter", "OpenRouter", "Use your own OpenRouter API key and model selection."),
 )
 PROVIDER_NAMES = {k: n for k, n, _ in PROVIDER_CHOICES}
 PROVIDER_KEY_URL = {"gemini": "https://aistudio.google.com/apikey", "mistral": "https://console.mistral.ai/api-keys",
@@ -142,13 +135,15 @@ class Ledger:
                  on_frequency: Callable[[str], None] | None = None,
                  on_launch: Callable[[], None] | None = None,
                  save_option: Callable[[str, Any], None] | None = None,
-                 on_provider: Callable[[], None] | None = None) -> None:
+                 on_provider: Callable[[], None] | None = None, auth=None,
+                 on_auth_busy: Callable[[], None] | None = None) -> None:
         self.root, self.art, self.cfg = root, art, cfg
         self.status_fn = status
         self.on_quit = on_quit
         self.on_frequency = on_frequency
         self.on_launch = on_launch
         self.on_provider = on_provider
+        self.auth, self.on_auth_busy = auth, on_auth_busy
         self.save_option = save_option or (lambda _k, _v: None)
         self.log_file = log_file
         self.data_dir = data_dir
@@ -186,7 +181,7 @@ class Ledger:
         chips = tk.Frame(self.main, bg=NAVY, padx=14, pady=8)
         chips.pack(fill="x")
         self.chips: dict[str, tuple[tk.Canvas, tk.Label]] = {}
-        for i, (key, label) in enumerate((("game", "Game"), ("player2", "AI"), ("campaign", "Campaign"),
+        for i, (key, label) in enumerate((("game", "Game"), ("ai", "AI"), ("campaign", "Campaign"),
                                           ("date", "Date in game"), ("setup", "Your settings"))):
             cell = tk.Frame(chips, bg=NAVY)
             cell.grid(row=i, column=0, sticky="w", pady=1)
@@ -271,7 +266,8 @@ class Ledger:
         self.main.pack_forget()
         self._choices = {"language": prompts.LANGUAGE_NAMES.get(self.cfg.language, self.cfg.language) or "English",
                          "frequency": self.cfg.event_frequency, "difficulty": self.cfg.difficulty,
-                         "provider": getattr(self.cfg, "ai_provider", "player2") or "player2"}
+                         "provider": getattr(self.cfg, "ai_provider", "chatgpt") or "chatgpt",
+                         "chatgpt_model": self.cfg.chatgpt_model}
         for p in PROVIDER_KEY_URL:
             self._choices[f"{p}_api_key"] = str(getattr(self.cfg, f"{p}_api_key", "") or "")
             self._choices[f"{p}_model"] = str(getattr(self.cfg, f"{p}_model", "") or PROVIDER_MODEL[p])
@@ -304,8 +300,19 @@ class Ledger:
                      ).pack(side="left", padx=(0, 16))
         nav = tk.Frame(self.setup, bg=NAVY_LO, padx=14, pady=8)
         nav.pack(side="bottom", fill="x")
-        body = tk.Frame(self.setup, bg=NAVY, padx=14)
-        body.pack(fill="both", expand=True)
+        # Keep the account controls reachable on small screens. Navigation stays
+        # outside the scrolling area so Save and Cancel are always visible.
+        viewport = tk.Frame(self.setup, bg=NAVY)
+        viewport.pack(fill="both", expand=True)
+        self._setup_canvas = canvas = tk.Canvas(viewport, bg=NAVY, highlightthickness=0, bd=0)
+        scroll = ThinScroll(viewport, canvas, bg=NAVY)
+        scroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        body = tk.Frame(canvas, bg=NAVY, padx=14)
+        window = canvas.create_window(0, 0, window=body, anchor="nw")
+        body.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        canvas.configure(yscrollcommand=scroll.set)
 
         def para(text: str, *, dim: bool = True) -> None:
             tk.Label(body, text=text, fg=TEXT_DIM if dim else TEXT, bg=NAVY, font=a.note if dim else a.text,
@@ -353,14 +360,17 @@ class Ledger:
             self._pick("difficulty", self._choices["difficulty"])
         elif self._step == 3:
             Bar(body, "The AI that writes", font=a.bar).pack(fill="x", pady=(2, 8))
-            para("Court Brain uses Player2 by default. You can instead connect it to Google Gemini with a free "
-                 "key of your own, or to OpenRouter (any of hundreds of models, with your own credits). Voices "
-                 "and dictation still go through the Player2 app.")
+            para("Choose the text provider. ChatGPT uses your eligible plan; the other providers use "
+                 "your own API key. Voice is optional and disabled in this release.")
             self._cards = {}
-            for key, name, text in PROVIDER_CHOICES:
-                card = Choice(body, a, name, text, lambda k=key: self._pick("provider", k))
-                card.pack(fill="x", pady=2)
+            choices = tk.Frame(body, bg=NAVY)
+            choices.pack(fill="x")
+            for i, (key, name, text) in enumerate(PROVIDER_CHOICES):
+                card = Choice(choices, a, name, text, lambda k=key: self._pick("provider", k))
+                card.d.configure(wraplength=235)
+                card.grid(row=i // 2, column=i % 2, sticky="nsew", padx=2, pady=2)
                 self._cards[key] = card
+            choices.columnconfigure((0, 1), weight=1, uniform="providers")
             self._prov = tk.Frame(body, bg=NAVY)
             self._prov.pack(fill="x", pady=(6, 0))
             self._pick("provider", self._choices["provider"])
@@ -398,6 +408,15 @@ class Ledger:
             child.destroy()
         self._key_entry = self._model_entry = None
         p = self._choices["provider"]
+        if p == "chatgpt":
+            from .chatgpt_settings import ChatGPTSettings
+            from .ai.chatgpt_auth import ChatGPTAuth
+            panel = ChatGPTSettings(self._prov, auth=self.auth or ChatGPTAuth(),
+                model=self._choices["chatgpt_model"],
+                on_model=lambda value: self._choices.update(chatgpt_model=value),
+                on_connection=self.on_provider or (lambda: None), on_busy=self.on_auth_busy or (lambda: None))
+            panel.pack(fill="x")
+            return
         if p not in PROVIDER_KEY_URL:
             return
         link = tk.Label(self._prov, text=f"\u2192 Get your key here: {PROVIDER_KEY_URL[p]}", fg=BLUE, bg=NAVY,
@@ -459,7 +478,7 @@ class Ledger:
                 return
         c = self._choices
         changed = False
-        for opt in ("ai_provider", *(f"{p}_{f}" for p in PROVIDER_KEY_URL for f in ("api_key", "model"))):
+        for opt in ("ai_provider", "chatgpt_model", *(f"{p}_{f}" for p in PROVIDER_KEY_URL for f in ("api_key", "model"))):
             value = c["provider"] if opt == "ai_provider" else c[opt]
             if getattr(self.cfg, opt, None) != value:
                 setattr(self.cfg, opt, value)
@@ -560,12 +579,10 @@ class Ledger:
         if s:
             self._dot("game", GOOD if s.get("game") else GOLD_DIM,
                       "connected" if s.get("game") else "waiting for a game")
-            p2, who = s.get("player2"), s.get("provider") or "Player2"
+            connected, who = s.get("ai"), s.get("provider") or "AI"
             model = f" ({s['model']})" if s.get("model") else ""
-            self._dot("player2", GOOD if p2 else (BAD if p2 is False else GOLD_DIM),
-                      f"{who}{model} answers" if p2 else (
-                          (f"{who} does not answer - open the Player2 app" if who == "Player2" else
-                           f"{who} does not answer - check the key in Settings") if p2 is False else f"{who} …"))
+            self._dot("ai", GOOD if connected else (BAD if connected is False else GOLD_DIM),
+                      f"{who}{model} connected" if connected else f"{who}: check AI settings")
             camp = s.get("campaign") or ""
             self._dot("campaign", GOOD if camp else GOLD_DIM,
                       (camp + (f" · {s['memories']} memories" if s.get("memories") else "")) if camp else "-")

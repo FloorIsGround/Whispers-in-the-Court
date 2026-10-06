@@ -12,8 +12,8 @@ ENTRY_POINT = ROOT / "tools" / "court_brain" / "WhispersInTheCourt.py"
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if sys.version_info < (3, 10):
-        print("Court Brain requires Python 3.10 or newer.", file=sys.stderr)
+    if sys.version_info < (3, 11):
+        print("Court Brain requires Python 3.11 or newer.", file=sys.stderr)
         return 1
     try:
         import tkinter  # noqa: F401

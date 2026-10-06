@@ -1,21 +1,24 @@
 # Native Linux downstream port
 
-Status: local preview implementation. No public fork, push, pull request or real
-user game installation. The companion is native Linux; EU5 still runs under Proton.
+Status: native Linux preview in the user's downstream fork. EU5 still runs under
+Proton. Real-campaign/live-provider testing remains unverified.
 
 ## Baseline and scope
 
-This checkout starts from PR #1's audited source-import commit:
-`8e93dbfd8329684ad70cc62e15666d884ed51bc0`.
+The original Linux port began at audited source-import commit
+`8e93dbfd8329684ad70cc62e15666d884ed51bc0`. Its maintained source baseline is now
+`ciefa/main` commit `6e309d34bdda88cd361c7b07d2809891eb4ce3c7`, which adds ChatGPT
+sign-in, provider-neutral AI and Steam launching and removes Player2.
 
-Original repository: https://github.com/tierrewwalessio-crypto/Whispers-in-the-Court
-Source import: https://github.com/tierrewwalessio-crypto/Whispers-in-the-Court/pull/1
+- Downstream: https://github.com/FloorIsGround/Whispers-in-the-Court
+- Maintained source fork: https://github.com/ciefa/Whispers-in-the-Court
+- Original repository: https://github.com/tierrewwalessio-crypto/Whispers-in-the-Court
+- Original source-import PR: https://github.com/tierrewwalessio-crypto/Whispers-in-the-Court/pull/1
 
-Publication is deferred until this source import is verified merged. Do not
-publish Linux changes or open a PR before then. Once merged, verify whether the
-merged source differs,
-then merge the real upstream main into this branch rather than assuming a
-squash merge preserves the original commit IDs.
+The user explicitly authorized creating and merging into their own fork. No
+upstream PR is authorized by that action; wait for the original source import
+and explicit direction before submitting Linux changes upstream. Preserve both
+source and Linux ancestry rather than assuming squash merges preserve IDs.
 
 The native Linux companion should run alongside EU5 under Proton. Keep shared
 AI behavior, prompts, action IDs, generators and game/mod files unchanged.
@@ -24,13 +27,14 @@ standalone Tk window behavior, configuration and build/packaging.
 
 ## Branch/remotes strategy
 
-- `upstream`: original repository. Fetch only; its push URL is disabled locally.
-- `linux-support`: downstream integration branch, currently based on the import.
-- `origin`: not configured. The user will create a public fork if desired later.
-- Future feature branches: small Linux changes based on `linux-support`.
-- Future release-update branches: merge one upstream release at a time, verify,
-  then integrate into `linux-support`. Do not merge directly into the release
-  branch or blindly cherry-pick upstream commits.
+- `origin`: FloorIsGround's fork; the only push-enabled remote.
+- `source`: ciefa's fork, fetch-only with push disabled.
+- `upstream`: original repository, fetch-only with push disabled.
+- `main`: integrated downstream branch; `linux-support` preserves Linux lineage.
+- Source-update branches merge one pinned `source/main` revision at a time,
+  reconcile only platform boundaries, run tests/parity, then integrate.
+- GitHub Actions are disabled pending a separately approved CI setup. Local
+  verification is not a claim that GitHub CI ran.
 
 Prefer merge-based updates for a published downstream branch. This preserves
 upstream ancestry, does not rewrite users' history and makes the downstream
@@ -41,7 +45,7 @@ patch surface visible. Only consider rebasing before public collaboration.
 From the repository root:
 
 ```sh
-uv run --no-project tools/check_upstream_parity.py --upstream upstream/import-source
+uv run --no-project tools/check_upstream_parity.py --upstream 6e309d34bdda88cd361c7b07d2809891eb4ce3c7
 uv run --no-project python -m unittest discover -s tests/linux -v
 ```
 
@@ -90,8 +94,9 @@ when an actual Linux build is ready. Do not imply upstream authors endorse it.
   directly on Linux. Keep launch/setup failures explicit.
 - Provide a usable standalone Tk window on Linux before attempting window
   docking. No dependency on Windows-only overlay APIs.
-- Retain API-provider selection; do not assume Player2 is installed or supported
-  on Linux. Offline mocked providers must cover basic bridge behavior.
+- Retain ChatGPT sign-in and cloud-provider selection from the maintained source
+  fork; do not reintroduce the removed Player2 dependency. Offline providers
+  must cover basic bridge behavior and settings/auth UI in private fixtures.
 - Package on Linux with bundled runtime/Tk/mod files. Correct output suffix,
   platform-aware icons and no surprise dependency installation by the build.
 - Avoid installing/updating user game files during help/build/smoke tests.
@@ -102,7 +107,7 @@ when an actual Linux build is ready. Do not imply upstream authors endorse it.
 ```sh
 ./dist/WhispersInTheCourt
 # Or run the source with an existing Python/Tk interpreter:
-uv run --offline --no-project --no-sync --python 3.14 packaging/linux/launch.py
+uv run --offline --no-project --no-sync --python .venv/bin/python packaging/linux/launch.py
 ```
 
 Normal startup can install/update the mod in the discovered EU5 user directory.
@@ -144,8 +149,9 @@ verification; installations used disposable fixtures only.
 - Linux refuses mod installation/launch when EU5 is running or `/proc` detection
   is uncertain. This is a best-effort process check, not a lock preventing a
   separate Steam process from starting EU5 during a copy.
-- Player2 remains external and its Linux runtime/voice support is not certified.
-  Existing cloud-provider selection is retained. No paid/live AI was called.
+- ChatGPT sign-in replaces Player2. Its upstream credential store is separate
+  from config, under the XDG data root. Voice is disabled by the source fork.
+  No real ChatGPT account or paid/live cloud AI was used in verification.
 
 See [packaging documentation](../packaging/linux/README.md) for source launching,
 Tk selection, building and desktop-entry installation. The parity allowlist's
@@ -153,10 +159,13 @@ Tk selection, building and desktop-entry installation. The parity allowlist's
 
 ## Current verification
 
-- 122 tests passed with no skips under isolated Xvfb/Metacity and Python 3.12/Tk
-  8.6: platform fixtures, Windows API/argument mocks, source-style comparisons,
-  real Tk ledger/panel/settings/editor, actual wheel scrolling, minimize/restore,
-  private-config permissions and singleton namespace/ancestor regressions.
+- 132 Linux tests passed with no skips under isolated Xvfb/Metacity and Python
+  3.12/Tk 8.6: platform fixtures, Windows API/argument mocks, source-style
+  comparisons, real Tk ledger/panel/settings/editor, wheel/minimize/restore,
+  private config and exact-text migration backups, singleton and error paths.
+- 52 source-main AI/UI tests and 6 Windows-launch emulation tests passed in the
+  same sandbox. Combined total: 190 tests, no skips. OAuth callback fixtures use
+  only isolated loopback; the namespace has no external interfaces/routes.
 - Python 3.14 unit suite also passes; its two GUI checks are skipped without a
   display. GUI checks were exercised separately in isolation.
 - Offline synthetic AI completion -> localisation -> poll -> acknowledgement
@@ -176,7 +185,8 @@ Tk selection, building and desktop-entry installation. The parity allowlist's
   Shared AI, prompts, action IDs, generators and mod assets remain unchanged.
 
 Still unverified: real EU5/Proton campaign operation, Steam desktop-handler launch,
-Player2/voice, live cloud providers, Windows execution/build on Windows, and a
-cross-distribution release matrix. Existing upstream dry-run, timeline/journal and
-delete-first update risks remain outside the portability changes. Use an
-expendable backed-up campaign for the next approved integration test.
+real ChatGPT sign-in/live cloud providers, Windows execution/build on Windows,
+and a cross-distribution release matrix. Source-main includes new AI cancellation
+and auth guards; this platform merge is not a comprehensive security audit of
+those upstream changes. Do not assume dry-run is a no-write safety boundary.
+Use an expendable backed-up campaign for the next approved integration test.

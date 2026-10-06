@@ -14,6 +14,8 @@ venv/
 # never commit them. config.example.json is the template.
 tools/court_brain/config.json
 tools/court_brain/instructions.json
+tools/court_brain/config.json.*.bak
+*.credentials
 
 # Logs, campaign memory and saves written while testing
 *.log

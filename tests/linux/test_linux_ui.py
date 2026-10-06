@@ -23,7 +23,7 @@ from courtbrain import drawer
 
 # Import only the reviewed UI and declarative prompt module. A module-level
 # sys.modules stub would poison ledger.prompts for other tests in the same suite.
-from courtbrain import ledger
+from courtbrain import config, ledger
 
 
 class FontTests(unittest.TestCase):
@@ -90,14 +90,13 @@ class FontTests(unittest.TestCase):
         self.assertTrue(all(c.kwargs["family"] == "Georgia" for c in font.call_args_list))
 
     def test_existing_art_loader_still_uses_game_assets(self):
-        gfx = types.ModuleType("courtbrain.gfx")
-        gfx.prepare = Mock(return_value={"corner_tl": Path("/synthetic/cache/corner.png")})
-        with patch.dict(sys.modules, {"courtbrain.gfx": gfx}), \
+        from courtbrain import gfx
+        with patch.object(gfx, "prepare", return_value={"corner_tl": Path("/synthetic/cache/corner.png")}) as prepare, \
              patch.object(drawer.tkfont, "families", return_value=()), \
              patch.object(drawer.tkfont, "Font"), \
              patch.object(drawer.tk, "PhotoImage", return_value="decoded-art") as image:
             art = drawer.Art(Mock(), "/synthetic/game", Path("/synthetic/cache"))
-        gfx.prepare.assert_called_once_with("/synthetic/game", Path("/synthetic/cache"), drawer.GOLD)
+        prepare.assert_called_once_with("/synthetic/game", Path("/synthetic/cache"), drawer.GOLD)
         image.assert_called_once()
         self.assertEqual(art.img("corner_tl"), "decoded-art")
 
@@ -165,6 +164,54 @@ class DesktopActionTests(unittest.TestCase):
             panel.log_file.is_file.return_value = True
             panel._open_log()
             opener.assert_called_once_with(panel.log_file)
+
+
+class AISettingsTests(unittest.TestCase):
+    def test_status_uses_provider_neutral_chip_and_selected_model(self):
+        panel = ledger.Ledger.__new__(ledger.Ledger)
+        panel.root = Mock()
+        panel.cfg = config.Config(setup_done=True)
+        panel._dot = Mock()
+        for connected, color, expected in (
+            (True, drawer.GOOD, "ChatGPT (fixture-model) connected"),
+            (False, drawer.BAD, "ChatGPT: check AI settings"),
+            (None, drawer.GOLD_DIM, "ChatGPT: check AI settings"),
+        ):
+            with self.subTest(connected=connected):
+                panel.status_fn = lambda: {"game": False, "ai": connected,
+                                           "provider": "ChatGPT", "model": "fixture-model"}
+                panel._dot.reset_mock()
+                panel._poll()
+                panel._dot.assert_any_call("ai", color, expected)
+                self.assertNotIn("player2", [call.args[0] for call in panel._dot.call_args_list])
+        panel.root.after.assert_called_with(1000, panel._poll)
+
+    def test_chatgpt_fields_use_injected_auth_without_default_credential_store(self):
+        from courtbrain import chatgpt_settings
+        from courtbrain.ai import chatgpt_auth
+        panel = ledger.Ledger.__new__(ledger.Ledger)
+        panel.art = Mock()
+        panel._prov = Mock()
+        panel._prov.winfo_children.return_value = []
+        panel._choices = {"provider": "chatgpt", "chatgpt_model": "fixture-model"}
+        panel.auth = object()  # Identity only: the mocked widget must not read a store.
+        panel.on_provider, panel.on_auth_busy = Mock(), Mock()
+        with patch.object(chatgpt_settings, "ChatGPTSettings") as settings, \
+             patch.object(chatgpt_auth, "ChatGPTAuth") as default_auth:
+            panel._draw_provider_fields()
+        default_auth.assert_not_called()
+        settings.assert_called_once()
+        call = settings.call_args
+        self.assertEqual(call.args, (panel._prov,))
+        self.assertIs(call.kwargs["auth"], panel.auth)
+        self.assertEqual(call.kwargs["model"], "fixture-model")
+        self.assertIs(call.kwargs["on_connection"], panel.on_provider)
+        self.assertIs(call.kwargs["on_busy"], panel.on_auth_busy)
+        call.kwargs["on_model"]("new-fixture-model")
+        self.assertEqual(panel._choices["chatgpt_model"], "new-fixture-model")
+        settings.return_value.pack.assert_called_once_with(fill="x")
+        self.assertIsNone(panel._key_entry)
+        self.assertIsNone(panel._model_entry)
 
 
 class StandaloneTests(unittest.TestCase):
@@ -279,21 +326,21 @@ class DragTests(unittest.TestCase):
         self.assertIsNone(panel._drag_origin)
 
 
-# Frozen AST snapshots from prep commit 6e89498. Added platform bindings and
-# the separately tested thin-space fallback are normalized for comparisons;
-# palettes, widgets, geometry, other text and draw commands remain exact.
+# Frozen AST snapshots from source/main 6e309d34bdda88cd361c7b07d2809891eb4ce3c7.
+# Only Linux wheel/drag bindings and heading fallback are normalized; new main's
+# ChatGPT settings, provider labels/status, layouts and Windows APIs stay exact.
 _RENDER_SNAPSHOTS = {'drawer.py': {'mix': '8b2507df6df8f044195fd03e459612e120e64f291e570cb597bda9d71d335336',
                'gradient': '19a0c0f2975c2d748a98968c87b9e6b2dbd9a55c0cc99ff61ececc236b795932',
                'Plate': 'e9779a38577749423967eb51329a2aa4ec7ee4f02de20081ec4cb65fdcc9b1d8',
                'Bar': 'c24573496c8ef873c8cf50948aefe900b9b07875d3e1e76b9986838a998f7d1c',
                'ThinScroll': '95e9a1505481794d6baad5ef8e2af84746cba6674b48097f807a996e26e50620',
                'inset': '3f2ff699748945b93d67b087657935ba0dbae534120922540b824766f13da07a',
-               'Callbacks': '2780853654ad8d80d4e9415a823401c40440fd3d2f415090b19768cc221c5fc8',
+               'Callbacks': '7a60ef80be84893e2c75cc9550435c63b0b144a53af83be6c54441609edc2e88',
                'Header': '8c469a1eae634edd6fde179fd0c052606d046f522f905763552fc8bb572ea42e',
                'game_client_rect': 'c283701e714e3ea6f4ab7f52592d3132edac335ac25c136df1fb19834beae502',
                'foreground_is': '8c281062c545742729404fa7c69d94d4a5b5a882d00f22a1d6025ae92b597ee2',
                'dark_title_bar': '6cad75ca7842043c3282756de6b9f1f9408cef78dbc5cb913f639c00901def4a',
-               'Drawer._build': 'b0cb969199f010f0a0708aa21926c1354219fbe6bec34cb08f7afa095feba167',
+               'Drawer._build': '6856098d9e284baf591b46c9bc82892000e532614bf9b8194552175188679f13',
                'Drawer._draw_rule': '2f059e689c16c6168c254ecd714809450f298bb94304816e3e2154594c0af1bf',
                'Drawer._draw_head': '934e6049350dff6e941403557bec2230206f07ffbd396ec8ab2eea7b832551db',
                'Drawer._close_hover': 'f4b326300d3685884cc090dc564a8751d03892202b47353719eabfa7ce171175',
@@ -304,13 +351,15 @@ _RENDER_SNAPSHOTS = {'drawer.py': {'mix': '8b2507df6df8f044195fd03e459612e120e64
                'Drawer.set_hub': '2cb78ffaa79d746cf07d87a181b18b11c58d4afe97bffe63fbccf1bf387f0d4c'},
  'ledger.py': {'_header': '45f8d7b7353ebcfdb61d730fdacbac53dc70089146a31fbf4766681bb6248145',
                'Choice': 'c0411119afbe0e733e2c3bb4cf318129a4f93911e2eba85ca766e414f2ce8ba0',
-               'Ledger.__init__': '3164ad0f331f428e909cb87ff297bf35935ec5ec8e6903f4f9305743ec42d462',
-               'Ledger._build_main': 'e198c05bfb9e9746a16f0cdeb4bcd86630be66837dd8680a70bfdd70fc26b2df',
-               'Ledger.show_setup': '3335168887fd19813e765d6b7d634569a8d19c826d0c75a1a2458bfb1a2fe8eb',
-               'Ledger._draw_step': 'bc5d6513872b0e97fea3b661b1dfcc028df1950a2bf2b22293ff555314cd1f6c',
-               'Ledger._draw_provider_fields': '548fc2691938ac575a09840bac3890695bac2227c176998e21e531ec1c578b68',
-               'InstructionsEditor.__init__': 'd165642e0b8c0cadcd2e3e7d9380ddea4a0334afb61ee9be4359e45576c96e96'}}
-
+               'Ledger.__init__': '56a64a7b2ad74c25527e23a5d06f06e1446a7925fe52502407db637ed70d363a',
+               'Ledger._build_main': '633a8a998b9f9f391040534e46fb681fe8e6948eec422e186aaa53671191d32a',
+               'Ledger.show_setup': '0d598bcf3e95f5acaff80c419e2dfe5f3e8080481498ab8884e42bc8f833141f',
+               'Ledger._draw_step': 'f11269a5d312d8fce8f72584ca15bc32c2ba048bd88484d9904904adbd6f9b7b',
+               'Ledger._draw_provider_fields': '8fd44b5b4d24760aace4b0efd926d02fc51e0236e011cf5af5f1fd05b3c013d5',
+               'InstructionsEditor.__init__': 'd165642e0b8c0cadcd2e3e7d9380ddea4a0334afb61ee9be4359e45576c96e96',
+               'Ledger._poll': 'dee7bd9803ab3a765df58c8fa68b9cd77bfd19b8ea50976570e093efb304c013',
+               'Ledger.show_ai': '8222d395099cd69396037d67df4e5341750bf97a24f0aae5c1882ce8ab051a63'},
+ 'chatgpt_settings.py': {'ChatGPTSettings.__init__': '0da37ea3731df7e59401675d8b249aaa2d61b05998fbba63a2ce0f12c74c8ad4'}}
 
 class _RemovePlatformBindings(ast.NodeTransformer):
     def visit_Assign(self, node):
@@ -367,14 +416,26 @@ class StyleParityTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("DISPLAY") and os.environ.get("COURTBRAIN_TEST_ISOLATED_TK") == "1",
                      "requires explicitly authorized isolated DISPLAY; never use host GUI")
 class IsolatedTkSmoke(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.temp = tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"])
+        self.addCleanup(self.temp.cleanup)
+        home = Path(self.temp.name)
+        env = patch.dict(os.environ, {"HOME": str(home), "XDG_CONFIG_HOME": str(home / "config"),
+                                     "XDG_DATA_HOME": str(home / "data"), "TMPDIR": str(home)})
+        env.start()
+        self.addCleanup(env.stop)
+        custom = patch.object(ledger.prompts, "_CUSTOM", {"additions": {}, "overrides": {}})
+        custom.start()
+        self.addCleanup(custom.stop)
+
     def test_native_widgets_render_and_scroll_without_mainloop(self):
         callbacks = drawer.Callbacks(Mock(), Mock(), Mock(), Mock())
         with patch.object(drawer, "_load_game_fonts"), \
              patch.object(drawer.tk.Tk, "mainloop", side_effect=AssertionError("no mainloop")) as loop:
             panel = drawer.Drawer(callbacks)
         try:
-            cfg = types.SimpleNamespace(language="en", event_frequency="normal", difficulty="normal",
-                                        ai_provider="player2", setup_done=True)
+            cfg = config.Config(setup_done=True)
             log = ledger.Ledger(panel.root, panel.art, cfg=cfg, log_file=None, data_dir=None)
             editor = ledger.InstructionsEditor(panel.root, panel.art, None, log=Mock())
             panel.open(drawer.Header(kind="Audience", title="Test court", subtitle="Isolated UI smoke"))

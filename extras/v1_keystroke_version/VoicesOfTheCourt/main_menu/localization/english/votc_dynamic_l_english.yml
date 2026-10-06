@@ -14,7 +14,7 @@
 
  # --- a conversation ---------------------------------------------------
  votc_dlg_title:0 "An Audience"
- votc_dlg_body:0 "Your guest waits in silence, and the moment passes without a word being said. (Court Brain is not answering: check that the middleware and the Player2 app are running.)"
+ votc_dlg_body:0 "Your guest waits in silence, and the moment passes without a word being said. (Court Brain is not answering: check that the middleware and the the AI provider app are running.)"
  votc_dlg_o1:0 "..."
  votc_dlg_o2:0 "..."
  votc_dlg_o3:0 "..."

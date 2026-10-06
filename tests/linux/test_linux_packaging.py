@@ -36,6 +36,7 @@ class BuildArgumentsTests(unittest.TestCase):
         self.assertNotIn("--icon", args)
         self.assertIn("--collect-submodules", args)
         self.assertEqual(args[args.index("--collect-submodules") + 1], "courtbrain")
+        self.assertEqual(args[args.index("--collect-data") + 1], "jsonschema_specifications")
         self.assertEqual(args[-1], str(build.BRAIN / "WhispersInTheCourt.py"))
         self.assertFalse(any("wine" in arg.lower() for arg in args))
 
@@ -62,7 +63,10 @@ class BuildArgumentsTests(unittest.TestCase):
         bad = ["../config.json", "/tmp/api.key", "mod/WhispersInTheCourt/config.json",
                "mod/WhispersInTheCourt/instructions.json", "mod/WhispersInTheCourt/logs/debug.txt",
                "mod/WhispersInTheCourt/api_keys.txt", "tools/court_brain/config.json",
-               "mod/WhispersInTheCourt/.env", "mod/WhispersInTheCourt/court_brain.log"]
+               "mod/WhispersInTheCourt/.env", "mod/WhispersInTheCourt/court_brain.log",
+               "mod/WhispersInTheCourt/chatgpt.credentials",
+               "mod/WhispersInTheCourt/config.json.pre-chatgpt.bak",
+               "mod/WhispersInTheCourt/chatgpt_auth/token.json"]
         for name in bad:
             with self.subTest(name=name), patch.object(Path, "read_text", return_value=json.dumps([name])):
                 with self.assertRaises(ValueError):
@@ -72,7 +76,7 @@ class BuildArgumentsTests(unittest.TestCase):
         import json
         import os
         import tempfile
-        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as temp:
+        with tempfile.TemporaryDirectory(dir=os.environ["TMPDIR"]) as temp:
             root = Path(temp)
             manifest = root / "packaging" / "linux" / "assets.json"
             manifest.parent.mkdir(parents=True)
@@ -86,6 +90,15 @@ class BuildArgumentsTests(unittest.TestCase):
                         manifest.write_text(json.dumps(entries), encoding="utf-8")
                         with self.assertRaises(ValueError):
                             build.static_asset_manifest()
+                # These files actually exist: rejection must come from the
+                # privacy policy, not merely a missing-source check.
+                for private in ("chatgpt.credentials", "config.json.pre-chatgpt.bak",
+                                "instructions.json", "api_keys.txt"):
+                    private_source = source.parent / private
+                    private_source.write_text("synthetic-private-data", encoding="utf-8")
+                    manifest.write_text(json.dumps([f"mod/WhispersInTheCourt/{private}"]), encoding="utf-8")
+                    with self.subTest(private=private), self.assertRaises(ValueError):
+                        build.static_asset_manifest()
                 external = root / "external"
                 external.mkdir()
                 (external / "asset.txt").write_text("synthetic external asset", encoding="utf-8")
@@ -105,7 +118,7 @@ class BuildArgumentsTests(unittest.TestCase):
         self.assertEqual(build.build_arguments("win32", icon), [
             sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
             "--name", "WhispersInTheCourt", "--icon", str(icon),
-            "--paths", str(build.BRAIN),
+            "--paths", str(build.BRAIN), "--collect-data", "jsonschema_specifications",
             "--add-data", f"{build.MOD};mod/WhispersInTheCourt",
             "--add-data", f"{build.BRAIN / 'courtbrain' / 'icon.ico'};courtbrain",
             "--distpath", str(build.DIST), "--workpath", str(build.BUILD / "pyinstaller"),
@@ -179,13 +192,17 @@ class BuildExecutionTests(unittest.TestCase):
                 patch.object(build, "executable_path", return_value=artifact), \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(build.main([]), 0)
-        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_count, 4)
+        self.assertEqual(run.call_args_list[0].args[0],
+                         [sys.executable, "-m", "pip", "install", "-r", str(build.BRAIN / "requirements.txt")])
         self.assertEqual(run.call_args_list[1].args[0],
+                         [sys.executable, str(ROOT / "tools" / "validate_mod.py")])
+        self.assertEqual(run.call_args_list[2].args[0],
                          [sys.executable, "-m", "pip", "install", "--upgrade", "pyinstaller"])
         icon = build.BUILD / "WhispersInTheCourt.ico"
         make_icon.assert_called_once_with(icon)
         copyfile.assert_called_once_with(icon, build.BRAIN / "courtbrain" / "icon.ico")
-        self.assertEqual(run.call_args_list[2].args[0], build.build_arguments("win32", icon))
+        self.assertEqual(run.call_args_list[3].args[0], build.build_arguments("win32", icon))
 
     def test_validation_failure_stops_build(self):
         with patch.object(sys, "platform", "linux"), patch.dict(sys.modules, {"PyInstaller": Mock()}), \
@@ -200,6 +217,30 @@ class SourceLauncherTests(unittest.TestCase):
         path = ROOT / "packaging" / "linux" / "launch.py"
         self.assertTrue(path.is_file(), "missing standalone source launcher")
         self.launcher = load_script("linux_source_launcher", path)
+
+    def test_python310_is_rejected_before_tk_import_or_launch(self):
+        original_import = builtins.__import__
+
+        def forbid_tk(name, *args, **kwargs):
+            if name == "tkinter":
+                raise AssertionError("Unsupported Python must fail before importing Tk")
+            return original_import(name, *args, **kwargs)
+
+        output = io.StringIO()
+        with patch.object(self.launcher.sys, "version_info", (3, 10, 99)), \
+                patch("builtins.__import__", forbid_tk), \
+                patch.object(self.launcher.os, "execv") as execute, contextlib.redirect_stderr(output):
+            self.assertEqual(self.launcher.main([]), 1)
+        execute.assert_not_called()
+        self.assertIn("Python 3.11 or newer", output.getvalue())
+
+    def test_python311_meets_minimum_without_importing_courtbrain(self):
+        with patch.object(self.launcher.sys, "version_info", (3, 11, 0)), \
+                patch.dict(sys.modules, {"tkinter": Mock()}), \
+                patch.object(self.launcher.os, "execv") as execute, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.launcher.main(["--launcher-check"]), 0)
+        execute.assert_not_called()
 
     def test_launch_resolves_source_from_its_own_location_and_forwards_arguments(self):
         with patch.dict(sys.modules, {"tkinter": Mock()}), \

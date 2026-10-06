@@ -107,16 +107,40 @@ class DiscoveryTests(Sandbox):
         self.assertIn(lower, libraries)
         self.assertEqual(config.discover_game_dir(), game)
 
-    def test_player2_valid_port_and_malformed_fallback(self):
+    def test_chatgpt_defaults_without_companion_discovery(self):
         self.linux()
-        port = self.home / "config/game.player2.client/api.port"
-        port.parent.mkdir(parents=True)
-        self.assertEqual(config.discover_player2_port(), 4315)
-        for value, expected in (("54321\n", 54321), ("0", 4315), ("65536", 4315),
-                                ("-1", 4315), ("oops", 4315), ("1.5", 4315), ("", 4315)):
-            with self.subTest(value=value):
-                port.write_text(value)
-                self.assertEqual(config.discover_player2_port(), expected)
+        with patch.object(config, "discover_user_dir", return_value=None), \
+             patch.object(config, "discover_game_dir", return_value=None):
+            cfg = config.load(self.home / "settings.json")
+        self.assertEqual(cfg.ai_provider, "chatgpt")
+        self.assertEqual(cfg.chatgpt_model, "")
+        self.assertEqual(cfg.request_timeout_s, 120.0)
+        self.assertEqual(cfg.voice_provider, "none")
+        self.assertFalse(cfg.stt_enabled)
+        self.assertFalse(cfg.tts_enabled)
+        self.assertFalse(hasattr(config, "discover_player2_port"))
+        self.assertFalse(any(name.startswith("player2_") for name in config.Config.__dataclass_fields__))
+        for provider, model in (("gemini", "gemini-3.1-flash-lite"),
+                                ("mistral", "mistral-large-latest"),
+                                ("openrouter", "google/gemini-3.1-flash-lite")):
+            with self.subTest(provider=provider):
+                self.assertEqual(getattr(cfg, f"{provider}_model"), model)
+                self.assertEqual(getattr(cfg, f"{provider}_api_key"), "")
+        self.popen.assert_not_called()
+
+    def test_load_discovers_native_paths_and_game_language(self):
+        self.linux()
+        game = self.game(self.home / "data/Steam")
+        user = self.home / "Documents/Paradox Interactive/Europa Universalis V"
+        (user / "logs").mkdir(parents=True)
+        (user / "pdx_settings.json").write_text('{"System": {"language": "l_german"}}')
+        cfg = config.load(self.home / "settings.json")
+        self.assertEqual(cfg.game_dir, str(game))
+        self.assertEqual(cfg.user_dir, str(user))
+        self.assertEqual(cfg.mod_dir, str(user / "mod/WhispersInTheCourt"))
+        self.assertEqual(cfg.game_language, "german")
+        self.assertEqual(cfg.ai_provider, "chatgpt")
+        self.popen.assert_not_called()
 
 
 class ProcessTests(Sandbox):
@@ -428,8 +452,7 @@ class ConfigPrivacyTests(Sandbox):
         default = patch.object(config, "_default_config_path", return_value=self.path)
         default.start()
         self.addCleanup(default.stop)
-        for name, value in (("discover_user_dir", None), ("discover_game_dir", None),
-                            ("discover_player2_port", 4315)):
+        for name, value in (("discover_user_dir", None), ("discover_game_dir", None)):
             mocked = patch.object(config, name, return_value=value)
             mocked.start()
             self.addCleanup(mocked.stop)
@@ -438,12 +461,101 @@ class ConfigPrivacyTests(Sandbox):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.parent.parent.chmod(0o755)
         self.path.parent.chmod(0o755)
-        self.path.write_text('{"gemini_api_key": "fixture-only", "language": "English"}')
+        self.path.write_text('{"ai_provider": "chatgpt", "gemini_api_key": "fixture-only", "language": "English"}')
         self.path.chmod(0o644)
 
     def actions(self):
         return (lambda: config.save(config.Config(gemini_api_key="fixture-only")),
                 lambda: config.set_option("language", "Italiano"), config.load)
+
+    def test_chatgpt_model_save_is_private_and_preserves_cloud_key(self):
+        import json
+        self.existing()
+        config.set_option("chatgpt_model", "fixture-model")
+        cfg = config.load()
+        self.assertEqual(cfg.chatgpt_model, "fixture-model")
+        self.assertEqual(cfg.ai_provider, "chatgpt")
+        self.assertEqual(cfg.gemini_api_key, "fixture-only")
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(self.path.read_text())["chatgpt_model"], "fixture-model")
+
+    def test_legacy_migration_creates_exact_private_backup_and_keeps_unknown_options(self):
+        import json
+        self.path.parent.mkdir(parents=True)
+        original = json.dumps({"ai_provider": "player2", "player2_port": 1234,
+                               "player2_api_key": "fixture-legacy-key", "health_ping_s": 30,
+                               "stt_enabled": True, "tts_enabled": True,
+                               "language": "Italiano", "custom_option": {"retained": True},
+                               "openrouter_api_key": "fixture-cloud-key"}).encode()
+        self.path.write_bytes(original)
+        self.path.chmod(0o644)
+        cfg = config.load()
+        backup = self.path.with_suffix(".json.pre-chatgpt.bak")
+        self.assertEqual(backup.read_bytes(), original)
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(cfg.ai_provider, "chatgpt")
+        self.assertEqual(cfg.language, "Italiano")
+        self.assertEqual(cfg.voice_provider, "none")
+        self.assertFalse(cfg.stt_enabled)
+        self.assertFalse(cfg.tts_enabled)
+        self.assertEqual(cfg.extra["custom_option"], {"retained": True})
+        self.assertEqual(cfg.openrouter_api_key, "fixture-cloud-key")
+        config.save(cfg)
+        config.load()
+        self.assertEqual(backup.read_bytes(), original, "Later loads must not replace the migration backup")
+        data = json.loads(self.path.read_bytes())
+        self.assertEqual(data["custom_option"], {"retained": True})
+        self.assertEqual(data["openrouter_api_key"], "fixture-cloud-key")
+        self.assertFalse(any(key.startswith("player2_") for key in data))
+        self.assertNotIn("health_ping_s", data)
+
+    def test_migration_rejects_unsafe_backup_without_touching_its_target(self):
+        import json
+        self.path.parent.mkdir(parents=True)
+        original = json.dumps({"ai_provider": "player2", "player2_port": 4315})
+        self.path.write_text(original)
+        backup = self.path.with_suffix(".json.pre-chatgpt.bak")
+        victim = self.home / "backup-victim"
+        victim.write_text("do-not-read-or-change")
+        victim.chmod(0o644)
+        for linked in ("symlink", "hardlink"):
+            with self.subTest(link=linked):
+                if linked == "symlink":
+                    backup.symlink_to(victim)
+                else:
+                    os.link(victim, backup)
+                try:
+                    with self.assertRaises(OSError):
+                        config.load()
+                    self.assertEqual(self.path.read_text(), original)
+                    self.assertEqual(victim.read_text(), "do-not-read-or-change")
+                    self.assertEqual(victim.stat().st_mode & 0o777, 0o644)
+                finally:
+                    backup.unlink()
+
+    def test_migration_backup_failure_does_not_apply_new_settings(self):
+        import json
+        self.path.parent.mkdir(parents=True)
+        original = json.dumps({"ai_provider": "player2", "player2_port": 4315})
+        self.path.write_text(original)
+        with patch("os.replace", side_effect=OSError("fixture backup failure")), self.assertRaises(OSError):
+            config.load()
+        self.assertEqual(self.path.read_text(), original)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_migration_never_replaces_existing_cloud_selection(self):
+        import json
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps({"ai_provider": "openrouter", "player2_port": 4315,
+                                        "openrouter_model": "fixture-model", "custom_option": "keep"}))
+        cfg = config.load()
+        self.assertEqual(cfg.ai_provider, "openrouter")
+        self.assertEqual(cfg.openrouter_model, "fixture-model")
+        self.assertEqual(cfg.extra["custom_option"], "keep")
+        self.assertNotIn("player2_port", cfg.extra)
+        self.assertEqual(self.path.with_suffix(".json.pre-chatgpt.bak").stat().st_mode & 0o777, 0o600)
 
     def test_save_private_new_directory_and_file_under_umask022(self):
         previous = os.umask(0o022)

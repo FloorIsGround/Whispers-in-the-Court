@@ -4,11 +4,12 @@ Windows: py -3 tools/build_exe.py -> dist/WhispersInTheCourt.exe
 Linux:   python3 tools/build_exe.py -> dist/WhispersInTheCourt
 
 Windows retains its original icon/one-file/windowed build and automatic
-PyInstaller installation; --no-install disables installation. Linux requires
+dependency installation; --no-install disables installation. Linux requires
 an already prepared build environment and never installs packages. Both run
 the local static mod validator before building. See packaging/linux/README.md
 for source launching, asset policy and Linux libc compatibility limitations.
-Player2 remains separate. No Wine is needed for the Linux companion.
+Text providers are built in; no separate AI desktop app is required.
+No Wine is needed for the Linux companion.
 """
 
 from __future__ import annotations
@@ -121,6 +122,7 @@ def static_asset_manifest() -> list[tuple[Path, str]]:
         parts = relative.parts
         private = any(
             part.lower() in {"config.json", "instructions.json", "logs", "log", "__pycache__"}
+            or part.lower().startswith(("config.json.", "instructions.json."))
             or any(token in part.lower() for token in (".env", "api_key", "apikey", "secret", "credential"))
             or part.lower().endswith((".log", ".key", ".pem"))
             for part in parts
@@ -145,9 +147,9 @@ def build_arguments(platform: str, icon: Path) -> list[str]:
         args += ["--windowed", "--name", NAME, "--icon", str(icon)]
     else:
         args += ["--name", NAME, "--collect-submodules", "courtbrain"]
-    args += ["--paths", str(BRAIN)]
+    args += ["--paths", str(BRAIN), "--collect-data", "jsonschema_specifications"]
     if platform == "win32":
-        # Keep the Windows command/output identical to the original builder.
+        # Keep the Windows icon/data layout and executable output unchanged.
         args += [
             "--add-data", f"{MOD};mod/WhispersInTheCourt",
             "--add-data", f"{BRAIN / 'courtbrain' / 'icon.ico'};courtbrain",
@@ -165,7 +167,7 @@ def build_arguments(platform: str, icon: Path) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build the native Whispers in the Court executable.")
     parser.add_argument("--no-install", action="store_true",
-                        help="fail if PyInstaller is missing (always enabled on Linux)")
+                        help="never install build dependencies (always enabled on Linux)")
     options = parser.parse_args(argv)
     if sys.platform not in {"win32", "linux"}:
         print("Build on Windows or Linux for that same platform; cross-compiling is not supported.")
@@ -189,6 +191,9 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError) as exc:
         print(f"Cannot safely package assets: {exc}")
         return 1
+    if sys.platform == "win32" and not options.no_install:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(BRAIN / "requirements.txt")],
+                       check=True)
     check = subprocess.run([sys.executable, str(ROOT / "tools" / "validate_mod.py")])
     if check.returncode != 0:
         print("The mod has problems: fix them before building the exe.")

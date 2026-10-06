@@ -1,7 +1,5 @@
-# Court Brain uses only the Python standard library.
-#
-# Python 3.10 or newer (it uses PEP 604 "X | None" annotations at runtime in
-# dataclasses). tkinter is used for the optional typing window and ships with
-# the python.org Windows installer.
-#
-# Nothing to install.
+# Python 3.11+ with tkinter (included in the python.org Windows installer).
+# JWT signatures use maintained cryptography; all AI replies are schema-validated.
+PyJWT[crypto]==2.15.1
+cryptography==50.0.2
+jsonschema==4.26.0
