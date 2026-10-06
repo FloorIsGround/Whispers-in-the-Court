@@ -21,14 +21,9 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "tools" / "court_brain"))
 from courtbrain import drawer
 
-# Avoid importing the AI/game modules just to build the UI.
-_PROMPTS = types.ModuleType("courtbrain.prompts")
-_PROMPTS.LANGUAGE_NAMES = {"en": "English"}
-_PROMPTS.ADDITIONS = {"voice": ("Voice", "How to speak")}
-_PROMPTS.EDITABLE = {"speech": ("Speech", "How to write", "Default instructions")}
-_PROMPTS.custom = lambda: {"additions": {}, "overrides": {}}
-with patch.dict(sys.modules, {"courtbrain.prompts": _PROMPTS}):
-    from courtbrain import ledger
+# Import only the reviewed UI and declarative prompt module. A module-level
+# sys.modules stub would poison ledger.prompts for other tests in the same suite.
+from courtbrain import ledger
 
 
 class FontTests(unittest.TestCase):
@@ -287,40 +282,34 @@ class DragTests(unittest.TestCase):
 # Frozen AST snapshots from prep commit 6e89498. Added platform bindings and
 # the separately tested thin-space fallback are normalized for comparisons;
 # palettes, widgets, geometry, other text and draw commands remain exact.
-_RENDER_SNAPSHOTS = {
-    "drawer.py": {
-        "mix": "33de6e40f009a1b8b4057184592e4cab946d120f2efc1756fef2cb83b62451e5",
-        "gradient": "a260ea072e308251d7f3bea1dd7b30df50f278dad8b84021226e0d713abe8fa8",
-        "Plate": "7e1d6d47c6f0247b1d202486e6dd630bb21a7c13849be558066f8ef9b6010405",
-        "Bar": "d159b928ee0100729a5f8d19489009852bd7614aa8c9c9411c34841b6bf1b16a",
-        "ThinScroll": "64ac77f2633bfe2a90527cf6676f1db69bc5ec36b8ccadd6555f58ebf5f7d049",
-        "inset": "c4fe425793944dccc5cc4c51b6dc8d6a3982c5c8b5b2a8f99faa32fe47a840f2",
-        "Callbacks": "6cd56d1e1f37e7bef8283d970f750c4cd0832c9d7abab55c362f0d3f130f9ef4",
-        "Header": "0304a55551705028fd27c7eb2067f8111721de02c881eb5859638b9a439d2ed0",
-        "game_client_rect": "2182e060b3d65ba0be4ecaedd911e36f0b57b860fc0e7b3d4d2b11e9e43dab5e",
-        "foreground_is": "a08b8387b882685e3d63abdd62510710887ba2cac04e825e0a8b4b334d5bf727",
-        "dark_title_bar": "44c0d3918307383488af8913878bf0da75affcca5090e427b6885e70d63577d4",
-        "Drawer._build": "a6ef1d80c3b54d0d7750bf992c68683178620b60eea8f30706b78ecfe5aa4a63",
-        "Drawer._draw_rule": "aeb09008582be2ebc32cb9e5fbbb43792c7c23dfa1bc7c85092fe3bf76c6e1fb",
-        "Drawer._draw_head": "3d8d61ed97fb5048a1e56a5d7485da80f0685d38059704a1ffe68e5fda47b24a",
-        "Drawer._close_hover": "0c2492ea05c3363172a1583563fdc22479a3ff11c1ed9527fc68af93080c7cc1",
-        "Drawer._slide": "9e26b119cc8e34c230bb69d2792f4f1e5546be5f9d262459e5a60760bd33e8c0",
-        "Drawer._draw_suggestions": "1030b20722b3b93c067ec114951c99034e8bd9f317a1c39ff1a944ca89e7ad66",
-        "Drawer.set_offers": "84e4c2a2cae48c1076280e449e192b75cbd24864ed991db9f5c61422e83ab24a",
-        "Drawer._confirm_offer": "fb37cc44b1903cef8ad7bca92242d9f23dd57de40c583abf0cad4173a186946a",
-        "Drawer.set_hub": "028c96dd99f586005e8fef7518a8c513d162b9ed265dc4bf2036afb83606e861",
-    },
-    "ledger.py": {
-        "_header": "da6177255ed6434b52e748651e2bae001e9a228e41346f844e47ac8704548e0d",
-        "Choice": "f21f292ac0efdca79f67db3c084293d2939955c23db800265243bebf347da127",
-        "Ledger.__init__": "d0603f487d47895fa9921355488f3648aee14182abd86acdc34ecd845b740cbf",
-        "Ledger._build_main": "228b56bed465b7028989361a8e5cae0aed150f16a5937e46e2972c082030f2f9",
-        "Ledger.show_setup": "e9763bbac5fb062a1d6f0b3b2ddb85a31413267b11449d4a8b3ad0cffafd3976",
-        "Ledger._draw_step": "d6e0cb7d28df6ef5800e963d6f19e2850e74c0be68d54645c1c43fd516b5dd73",
-        "Ledger._draw_provider_fields": "3c99952ba9ee1c73fa2e31997d9c1c68ec1934d677cc8db9e7403084c8a1357b",
-        "InstructionsEditor.__init__": "bda976a0e84a3b3f1b5279568e4427825d36e0b5974a871f487688eb8a132773",
-    },
-}
+_RENDER_SNAPSHOTS = {'drawer.py': {'mix': '8b2507df6df8f044195fd03e459612e120e64f291e570cb597bda9d71d335336',
+               'gradient': '19a0c0f2975c2d748a98968c87b9e6b2dbd9a55c0cc99ff61ececc236b795932',
+               'Plate': 'e9779a38577749423967eb51329a2aa4ec7ee4f02de20081ec4cb65fdcc9b1d8',
+               'Bar': 'c24573496c8ef873c8cf50948aefe900b9b07875d3e1e76b9986838a998f7d1c',
+               'ThinScroll': '95e9a1505481794d6baad5ef8e2af84746cba6674b48097f807a996e26e50620',
+               'inset': '3f2ff699748945b93d67b087657935ba0dbae534120922540b824766f13da07a',
+               'Callbacks': '2780853654ad8d80d4e9415a823401c40440fd3d2f415090b19768cc221c5fc8',
+               'Header': '8c469a1eae634edd6fde179fd0c052606d046f522f905763552fc8bb572ea42e',
+               'game_client_rect': 'c283701e714e3ea6f4ab7f52592d3132edac335ac25c136df1fb19834beae502',
+               'foreground_is': '8c281062c545742729404fa7c69d94d4a5b5a882d00f22a1d6025ae92b597ee2',
+               'dark_title_bar': '6cad75ca7842043c3282756de6b9f1f9408cef78dbc5cb913f639c00901def4a',
+               'Drawer._build': 'b0cb969199f010f0a0708aa21926c1354219fbe6bec34cb08f7afa095feba167',
+               'Drawer._draw_rule': '2f059e689c16c6168c254ecd714809450f298bb94304816e3e2154594c0af1bf',
+               'Drawer._draw_head': '934e6049350dff6e941403557bec2230206f07ffbd396ec8ab2eea7b832551db',
+               'Drawer._close_hover': 'f4b326300d3685884cc090dc564a8751d03892202b47353719eabfa7ce171175',
+               'Drawer._slide': '49f10a2d339d2b764ec802a03e5804cd5d13095cf3cd60bcb35e84332f3b303b',
+               'Drawer._draw_suggestions': '2ec570438f5819d07050d4f1dd90eef9575f059c9e59105b0f64f54d41338d48',
+               'Drawer.set_offers': 'b6262f2af85daeffae535fb2f8ebc3f2029b5744e506bd9759358bdf7076dd80',
+               'Drawer._confirm_offer': 'd9036966266703970d5dbf58c5bfd58c669882ae10a4ae5c5b5a24466c56bb22',
+               'Drawer.set_hub': '2cb78ffaa79d746cf07d87a181b18b11c58d4afe97bffe63fbccf1bf387f0d4c'},
+ 'ledger.py': {'_header': '45f8d7b7353ebcfdb61d730fdacbac53dc70089146a31fbf4766681bb6248145',
+               'Choice': 'c0411119afbe0e733e2c3bb4cf318129a4f93911e2eba85ca766e414f2ce8ba0',
+               'Ledger.__init__': '3164ad0f331f428e909cb87ff297bf35935ec5ec8e6903f4f9305743ec42d462',
+               'Ledger._build_main': 'e198c05bfb9e9746a16f0cdeb4bcd86630be66837dd8680a70bfdd70fc26b2df',
+               'Ledger.show_setup': '3335168887fd19813e765d6b7d634569a8d19c826d0c75a1a2458bfb1a2fe8eb',
+               'Ledger._draw_step': 'bc5d6513872b0e97fea3b661b1dfcc028df1950a2bf2b22293ff555314cd1f6c',
+               'Ledger._draw_provider_fields': '548fc2691938ac575a09840bac3890695bac2227c176998e21e531ec1c578b68',
+               'InstructionsEditor.__init__': 'd165642e0b8c0cadcd2e3e7d9380ddea4a0334afb61ee9be4359e45576c96e96'}}
 
 
 class _RemovePlatformBindings(ast.NodeTransformer):
@@ -370,7 +359,8 @@ class StyleParityTests(unittest.TestCase):
                         node = next(n for n in body if getattr(n, "name", None) == name)
                         body = node.body
                     node = _RemovePlatformBindings().visit(node)
-                    actual = hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest()
+                    dump_options = {'show_empty': True} if sys.version_info >= (3, 13) else {}
+                    actual = hashlib.sha256(ast.dump(node, include_attributes=False, **dump_options).encode()).hexdigest()
                     self.assertEqual(actual, expected)
 
 

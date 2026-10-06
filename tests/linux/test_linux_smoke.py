@@ -55,6 +55,17 @@ class StyleParityTests(unittest.TestCase):
             return result
 
         a, b = definitions(upstream), definitions(current)
+        # The one reviewed Linux-only heading adaptation keeps Windows tracking
+        # unchanged; normalize that exact call, not the rest of the renderer.
+        heading_assignments = [n for n in ast.walk(b["Drawer._draw_head"])
+                               if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+                               and n.targets[0].id == "kind"]
+        original_assignment = next(n for n in ast.walk(a["Drawer._draw_head"])
+                                   if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+                                   and n.targets[0].id == "kind")
+        self.assertEqual(len(heading_assignments), 1)
+        self.assertEqual(ast.unparse(heading_assignments[0].value), "_spaced_kind(hd.kind, f.kind)")
+        heading_assignments[0].value = original_assignment.value
         for name in ("mix", "gradient", "Plate._draw", "Bar._draw", "ThinScroll._draw",
                      "Drawer._draw_head", "Drawer._draw_rule"):
             with self.subTest(renderer=name):
@@ -150,6 +161,14 @@ class GuiSmokeTests(unittest.TestCase):
                 self.assertEqual(drawer.text.cget("fg"), TEXT)
                 self.assertGreater(drawer.head.winfo_width(), 100)
                 self.assertGreater(len(drawer.head.find_all()), 10)
+                if os.environ.get("WITC_TEST_WINDOW_MANAGER") == "1":
+                    drawer.win.iconify()
+                    update(0.15)
+                    self.assertEqual(drawer.win.state(), "iconic")
+                    drawer.show()
+                    update(0.15)
+                    self.assertEqual(drawer.win.state(), "normal")
+                    self.assertTrue(drawer.win.winfo_viewable())
                 drawer._hide_placeholder()
                 drawer.entry.delete("1.0", "end")
                 drawer.entry.insert("1.0", "A test message")

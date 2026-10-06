@@ -57,8 +57,16 @@ that may contact Player2; it is **not** a packaging-only safety check.
 
 ## Build the native executable
 
-Use a prepared Linux Python environment with **PyInstaller** and Tcl/Tk. The
-local integration environment uses PyInstaller 6.20.0 (and has Pillow 12.3.0).
+Use a prepared Linux Python environment with **PyInstaller** and Tcl/Tk. For
+Windows-style font fidelity, prefer an **Xft-enabled Tk** such as distro Tk 8.6;
+Tk builds without Xft can fall back to core X11 fonts even after fontconfig TTF
+registration. The verified local ELF uses Python 3.12.3/Tk 8.6 with Xft,
+PyInstaller 6.20.0 and proportional Noto Serif with working bold/italic faces.
+Pillow 12.3.0 was used only for captured GUI verification, not as an application
+dependency. The local system Tk/BLT packages were extracted into a build-only
+scratch tree, not installed system-wide. A uv Python 3.14/Tk 9 source run also
+works here, but that runtime lacks Xft and has less faithful typography.
+
 No build dependencies are installed by the Linux build script. A missing
 PyInstaller produces a clear error **before executing mod validation**.
 
@@ -129,7 +137,9 @@ with **glibc 2.39**. A build here is only a local artifact: older glibc-based
 distributions may fail with `GLIBC_x.y not found`; musl/Alpine and other CPU
 architectures are not supported by this artifact. The exact minimum required
 symbol versions must be measured from the built ELF and its collected shared
-libraries, not inferred from a successful build. Same/newer glibc is a starting
+libraries, not inferred from a successful build. Static inspection of this local
+artifact measured a highest required GLIBC symbol of **2.38**; no older-distro
+execution was tested. Same/newer glibc is a starting
 point, not proof that all display/system libraries are compatible. For a future
 portable release, build on the oldest supported distro and test each target;
 no such baseline or public release is declared here. A one-file executable also

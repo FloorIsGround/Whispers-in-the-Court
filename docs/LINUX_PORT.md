@@ -1,6 +1,7 @@
-# Linux downstream preparation
+# Native Linux downstream port
 
-Status: local preparation only. No public fork, push, pull request or game installation.
+Status: local preview implementation. No public fork, push, pull request or real
+user game installation. The companion is native Linux; EU5 still runs under Proton.
 
 ## Baseline and scope
 
@@ -95,9 +96,71 @@ when an actual Linux build is ready. Do not imply upstream authors endorse it.
 - Avoid installing/updating user game files during help/build/smoke tests.
 - Document that inherited dry-run/timeline/journal issues remain until fixed.
 
+## Using the local preview
+
+```sh
+./dist/WhispersInTheCourt
+# Or run the source with an existing Python/Tk interpreter:
+uv run --offline --no-project --no-sync --python 3.14 packaging/linux/launch.py
+```
+
+Normal startup can install/update the mod in the discovered EU5 user directory.
+Close EU5 first and back up campaigns before real-game testing. It is not a safe
+no-write inspection command. No real game was launched or installed during
+verification; installations used disposable fixtures only.
+
+- Configuration: `$XDG_CONFIG_HOME/WhispersInTheCourt/config.json`, falling back
+  to `~/.config/WhispersInTheCourt/config.json`. Source and frozen Linux builds
+  share this location, with `instructions.json` alongside it.
+- Campaign state remains under the selected EU5 user directory's `court_brain/`;
+  the mod and bridge paths remain those expected by the unchanged game scripts.
+- Discovery covers native Steam, Flatpak Steam and secondary libraries, then the
+  EU5 Proton prefix's Documents folder. If discovery selects the wrong prefix,
+  set absolute `user_dir` and `game_dir` in configuration; `mod_dir` is filled
+  from `user_dir` when omitted. Multiple prefixes should be checked manually.
+- Linux uses the same navy/gold Tk content, gradients, buttons and artwork
+  decoder. Its conversation panel is a movable, managed standalone window, not
+  a Windows-style game-window overlay. Native title bars follow the desktop
+  theme. Ctrl+Shift+Space in a Court Brain window restores a dismissed panel.
+- X11 wheel buttons and minimize/restore are supported. Wayland requires a
+  compatible Tk backend, usually XWayland; no native Wayland docking is claimed.
+- Installed game fonts are registered for this process only. An Xft-enabled Tk
+  runtime is needed to use their TTF faces. The local ELF uses Python 3.12 and
+  Tk 8.6/Xft; the uv-managed Python 3.14 Tk 9 runtime tested here lacks Xft and
+  falls back to a proportional core serif. No proprietary game fonts/art are
+  redistributed.
+- Linux refuses mod installation/launch when EU5 is running or `/proc` detection
+  is uncertain. This is a best-effort process check, not a lock preventing a
+  separate Steam process from starting EU5 during a copy.
+- Player2 remains external and its Linux runtime/voice support is not certified.
+  Existing cloud-provider selection is retained. No paid/live AI was called.
+
+See [packaging documentation](../packaging/linux/README.md) for source launching,
+Tk selection, building and desktop-entry installation. The parity allowlist's
+`ledger.py` exception covers only platform UI integration, not shared AI/game logic.
+
 ## Current verification
 
-Only the trusted downstream parity tool and disposable Git-fixture tests are
-executed during this preparation. Upstream application code, game integration,
-GUI and Linux binary have not yet been run or ported. Test/build preparation is
-not a claim that a Linux port already works.
+- 99 tests passed with no skips under isolated Xvfb/Metacity and Python 3.12/Tk
+  8.6: platform fixtures, Windows API/argument mocks, source-style comparisons,
+  real Tk ledger/panel/settings/editor, wheel bindings and minimize/restore.
+- Python 3.14 unit suite also passes; its two GUI checks are skipped without a
+  display. GUI checks were exercised separately in isolation.
+- Offline synthetic AI completion -> localisation -> poll -> acknowledgement
+  flow passed. This is not a live game-engine test.
+- Static mod validator: 48 files checked, nothing to report.
+- Native x86_64 ELF built and exercised: `--help`, first-start GUI, and extraction/
+  installation of its embedded mod into a disposable folder all passed.
+- All 54 explicitly bundled static assets matched their source bytes; archive
+  inspection found no `config.json`, `instructions.json`, logs or saves.
+- Highest GLIBC symbol among bundled ELF libraries is 2.38. The build host uses
+  glibc 2.39; this does not establish portable support for older distributions,
+  musl, other CPU architectures or every desktop library stack.
+- Upstream parity passes: only five upstream platform/UI/build files changed.
+  Shared AI, prompts, action IDs, generators and mod assets remain unchanged.
+
+Still unverified: real EU5/Proton campaign operation, Steam desktop-handler launch,
+Player2/voice, live cloud providers, Windows execution/build on Windows, and a
+cross-distribution release matrix. Existing upstream dry-run, timeline/journal and
+delete-first update risks remain outside the portability changes. Use an
+expendable backed-up campaign for the next approved integration test.
