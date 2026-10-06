@@ -11,8 +11,9 @@ This checkout starts from PR #1's audited source-import commit:
 Original repository: https://github.com/tierrewwalessio-crypto/Whispers-in-the-Court
 Source import: https://github.com/tierrewwalessio-crypto/Whispers-in-the-Court/pull/1
 
-The PR has not yet been merged. Do not publish Linux changes or open a PR before
-that import is merged. Once merged, verify whether the merged source differs,
+Publication is deferred until this source import is verified merged. Do not
+publish Linux changes or open a PR before then. Once merged, verify whether the
+merged source differs,
 then merge the real upstream main into this branch rather than assuming a
 squash merge preserves the original commit IDs.
 
@@ -111,7 +112,17 @@ verification; installations used disposable fixtures only.
 
 - Configuration: `$XDG_CONFIG_HOME/WhispersInTheCourt/config.json`, falling back
   to `~/.config/WhispersInTheCourt/config.json`. Source and frozen Linux builds
-  share this location, with `instructions.json` alongside it.
+  share this location, with `instructions.json` alongside it. Linux config files
+  are written atomically with mode 0600; existing owned regular config files are
+  tightened before reading. New directories use mode 0700. Symlinked config
+  paths, foreign-owned files and unsafe writable ancestors are rejected; set
+  `XDG_CONFIG_HOME` to the actual protected directory if using a symlinked
+  dotfiles arrangement. Keys remain plaintext, protected by filesystem modes.
+- The lifetime singleton uses `/tmp/WhispersInTheCourt-<effective-uid>` regardless
+  of HOME, TMPDIR or XDG configuration overrides. Its directory ancestry is
+  validated and the lock file is not deleted on release. This coordinates native
+  processes sharing `/tmp`, not containers with private `/tmp` mount namespaces.
+  Foreign precreation fails closed rather than selecting a second lock location.
 - Campaign state remains under the selected EU5 user directory's `court_brain/`;
   the mod and bridge paths remain those expected by the unchanged game scripts.
 - Discovery covers native Steam, Flatpak Steam and secondary libraries, then the
@@ -141,9 +152,10 @@ Tk selection, building and desktop-entry installation. The parity allowlist's
 
 ## Current verification
 
-- 99 tests passed with no skips under isolated Xvfb/Metacity and Python 3.12/Tk
+- 121 tests passed with no skips under isolated Xvfb/Metacity and Python 3.12/Tk
   8.6: platform fixtures, Windows API/argument mocks, source-style comparisons,
-  real Tk ledger/panel/settings/editor, wheel bindings and minimize/restore.
+  real Tk ledger/panel/settings/editor, actual wheel scrolling, minimize/restore,
+  private-config permissions and singleton namespace/ancestor regressions.
 - Python 3.14 unit suite also passes; its two GUI checks are skipped without a
   display. GUI checks were exercised separately in isolation.
 - Offline synthetic AI completion -> localisation -> poll -> acknowledgement
