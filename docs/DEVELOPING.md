@@ -23,7 +23,7 @@ tools/gen_*.py                 generators of mod files (see below)
 tools/validate_mod.py          static checks of the mod's script
 tools/build_exe.py             builds dist/WhispersInTheCourt.exe
 tools/make_cover.py            draws workshop/cover.png
-docs/ARCHITETTURA.md           how the game and Court Brain talk (Italian)
+docs/ARCHITETTURA.md           how the game and Court Brain talk
 docs/eu5_*.txt                 the game's script vocabulary, for the checks
 extras/                        optional pieces and the old v1 bridge
 workshop/                      Steam Workshop cover and screenshots

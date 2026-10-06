@@ -782,7 +782,7 @@ Whispers in the Court is open source under the [MIT license](LICENSE).
   from the sources (Python 3.10+, no packages), the generators, the checks and
   the build;
 - [docs/ARCHITETTURA.md](docs/ARCHITETTURA.md): how the game and Court Brain
-  talk to each other (in Italian);
+  talk to each other;
 - [SECURITY.md](SECURITY.md): what Court Brain connects to, what it reads and
   writes, and how to check a release;
 - [CONTRIBUTING.md](CONTRIBUTING.md): reporting bugs and sending changes;
