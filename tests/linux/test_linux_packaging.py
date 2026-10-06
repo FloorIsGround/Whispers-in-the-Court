@@ -68,6 +68,38 @@ class BuildArgumentsTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     build.static_asset_manifest()
 
+    def test_disposable_manifest_rejects_duplicates_symlinks_and_noncanonical_paths(self):
+        import json
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as temp:
+            root = Path(temp)
+            manifest = root / "packaging" / "linux" / "assets.json"
+            manifest.parent.mkdir(parents=True)
+            asset = "mod/WhispersInTheCourt/asset.txt"
+            source = root / asset
+            source.parent.mkdir(parents=True)
+            source.write_text("synthetic asset", encoding="utf-8")
+            with patch.object(build, "ROOT", root):
+                for entries in ([asset, asset], ["./" + asset], [asset.replace("/asset", "//asset")]):
+                    with self.subTest(entries=entries):
+                        manifest.write_text(json.dumps(entries), encoding="utf-8")
+                        with self.assertRaises(ValueError):
+                            build.static_asset_manifest()
+                external = root / "external"
+                external.mkdir()
+                (external / "asset.txt").write_text("synthetic external asset", encoding="utf-8")
+                source.unlink()
+                source.symlink_to(external / "asset.txt")
+                manifest.write_text(json.dumps([asset]), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    build.static_asset_manifest()
+                source.unlink()
+                (source.parent / "linked").symlink_to(external, target_is_directory=True)
+                manifest.write_text(json.dumps(["mod/WhispersInTheCourt/linked/asset.txt"]), encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    build.static_asset_manifest()
+
     def test_windows_arguments_are_identical_to_original_builder(self):
         icon = build.BUILD / "WhispersInTheCourt.ico"
         self.assertEqual(build.build_arguments("win32", icon), [

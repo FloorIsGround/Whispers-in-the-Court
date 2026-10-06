@@ -119,7 +119,8 @@ class OfflineBridgeTests(unittest.TestCase):
         client.close()
 
 
-@unittest.skipUnless(os.environ.get("DISPLAY"), "Requires isolated graphical display")
+@unittest.skipUnless(os.environ.get("DISPLAY") and os.environ.get("COURTBRAIN_TEST_ISOLATED_TK") == "1",
+                     "Requires explicitly authorized isolated graphical display")
 class GuiSmokeTests(unittest.TestCase):
     def test_panel_ledger_settings_editor_and_callback_flow(self):
         from courtbrain.config import Config
@@ -201,6 +202,8 @@ class GuiSmokeTests(unittest.TestCase):
                 self.assertEqual(closed, [True])
                 self.assertEqual(errors, [])
             finally:
+                for job in drawer.root.tk.call("after", "info"):
+                    drawer.root.after_cancel(job)
                 drawer.root.destroy()
 
 

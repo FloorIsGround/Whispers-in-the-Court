@@ -408,12 +408,30 @@ class IsolatedTkSmoke(unittest.TestCase):
             for text in (panel.text, panel.entry, log.text, editor.editor):
                 self.assertTrue(text.bind("<Button-4>"))
                 self.assertTrue(text.bind("<Button-5>"))
+                text.configure(state="normal")
+                text.delete("1.0", "end")
+                text.insert("1.0", "\n".join(f"Synthetic scroll row {i}" for i in range(150)))
+                panel.root.update()
+                text.yview_moveto(0)
+                text.yview_scroll(2, "units")
+                panel.root.update()
+                expected = text.index("@0,0")
+                self.assertNotEqual(expected, "1.0")
+                text.yview_moveto(0)
+                text.event_generate("<Button-5>", x=5, y=5)
+                panel.root.update()
+                self.assertEqual(text.index("@0,0"), expected, "X11 wheel must scroll exactly once")
+                text.event_generate("<Button-4>", x=5, y=5)
+                panel.root.update()
+                self.assertEqual(text.yview()[0], 0)
             panel.close()
             panel.show()
             panel.root.update_idletasks()
             self.assertTrue(panel.win.winfo_viewable())
             loop.assert_not_called()
         finally:
+            for job in panel.root.tk.call("after", "info"):
+                panel.root.after_cancel(job)
             panel.root.destroy()
 
 
