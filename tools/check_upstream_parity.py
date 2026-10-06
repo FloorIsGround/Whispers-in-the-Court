@@ -20,6 +20,8 @@ PLATFORM_FILES = frozenset({
     "tools/court_brain/courtbrain/config.py",
     "tools/court_brain/courtbrain/bundle.py",
     "tools/court_brain/courtbrain/drawer.py",
+    # Existing UI only: X11 scrolling/icon and desktop-handler integration.
+    "tools/court_brain/courtbrain/ledger.py",
     "tools/court_brain/courtbrain/__main__.py",
     "tools/court_brain/courtbrain/platform_linux.py",
     "tools/build_exe.py",

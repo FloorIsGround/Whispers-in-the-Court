@@ -94,6 +94,39 @@ class ParityTests(unittest.TestCase):
         self.write(path, "# ordinary platform fixture\n")
         self.assertFalse(self.check()["parity_ok"])
 
+    def test_symlinked_linux_test_parent_rejected(self):
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as external:
+            self.write("tests/linux/example.py", "# fixture\n")
+            self.git("add", "tests/linux/example.py")
+            folder = self.root / "tests/linux"
+            (folder / "example.py").unlink()
+            folder.rmdir()
+            Path(external, "example.py").write_text("# fixture\n")
+            folder.symlink_to(external, target_is_directory=True)
+            self.assertFalse(self.check()["parity_ok"])
+
+    def test_staged_protected_deletion_not_hidden_by_worktree(self):
+        self.git("rm", "--cached", "tools/court_brain/courtbrain/prompts.py")
+        result = self.check()
+        self.assertFalse(result["parity_ok"])
+        self.assertTrue(any(d["scope"] == "index" and d["change"] == "deleted"
+                            for d in result["unexpected_deviations"]))
+
+    def test_unresolved_index_fails_closed(self):
+        path = "tools/court_brain/courtbrain/prompts.py"
+        oid = self.git("rev-parse", f"HEAD:{path}").decode().strip()
+        records = f"0 {'0' * 40}\t{path}\n" + "".join(
+            f"100644 {oid} {stage}\t{path}\n" for stage in (1, 2, 3))
+        subprocess.run(["git", "-C", str(self.root), "update-index", "--index-info"],
+                       input=records, text=True, check=True)
+        with self.assertRaisesRegex(ValueError, "Unresolved merge in index"):
+            self.check()
+
+    def test_invalid_and_option_like_baselines_fail_closed(self):
+        for baseline in ("missing-baseline", "--help"):
+            with self.subTest(baseline=baseline), self.assertRaises(subprocess.CalledProcessError):
+                parity.check(baseline)
+
     def test_protected_executable_mode_rejected(self):
         (self.root / "mod/WhispersInTheCourt/in_game/example.txt").chmod(0o755)
         self.assertFalse(self.check()["parity_ok"])
