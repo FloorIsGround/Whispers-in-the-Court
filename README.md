@@ -53,14 +53,15 @@ Model inference runs online, while Court Brain and campaign memory live locally.
 3. Select **Refresh models / retry connection**, choose an available model,
    then save the settings. Eligibility, models and usage depend on your account
    and workspace. There is no API-key or automatic paid-provider fallback.
-4. Use **Start EU5**. In the launcher enable **Whispers in the Court (USE THIS)**
+4. Use **Start EU5** and complete any Steam sign-in or launch prompt. In the game's
+   mod manager enable **Whispers in the Court (USE THIS)**
    and disable duplicate Workshop/manual copies. Court Brain installs the mod
    from the source bundled with the executable.
 5. Load a game and keep Court Brain open. The record should say
    **The game answers: the bridge works.** Use **Speak with**, **Court**, the
    diplomacy interactions or **AI Advisor** to begin.
 
-EU5 must run with `-debug_mode` (the launch button supplies it), which disables
+EU5 must run with `-debug_mode` (the launch button passes it through Steam), which disables
 achievements. Use windowed or borderless fullscreen so the panel can appear.
 The executable is not code-signed; release checksums and source/build information
 are documented in [SECURITY.md](SECURITY.md).
@@ -104,6 +105,7 @@ to keep installation and troubleshooting easy to find.
 | Plan usage is limited | Check **ChatGPT usage**. When available again, use **Refresh models / retry connection**. No reset time is guessed. |
 | Connection check passes, generation fails | The catalog check is not proof of model access. Check the returned error; try an available model that accepts structured outputs. |
 | No game connection or event text | Enable the correct mod copy and restart EU5 with `-debug_mode`. |
+| DLC verification fails after launching | Close EU5, keep Court Brain open, and start from Steam with `-debug_mode` in the game's Launch Options. Older companion builds launched `eu5.exe` directly. |
 | Overlay does not appear | Use windowed or borderless fullscreen and keep Court Brain running. |
 | Microphone is disabled | No speech backend is installed; typed play works independently. |
 

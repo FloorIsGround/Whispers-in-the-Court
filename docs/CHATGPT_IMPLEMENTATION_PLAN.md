@@ -88,3 +88,14 @@ save/load, rewind and game mailbox delivery), live requests with the optional
 API-key providers, and latency/quality across other account/model combinations.
 Mock coverage is not represented as proof of those behaviors. Voice backends,
 Claude and a Codex app-server adapter remain outside this implementation.
+
+### Steam launcher correction
+
+The first user gameplay test exposed Steam initialization and DLC verification
+failures after the inherited launcher started `eu5.exe` directly. The launch
+button now requests `steam.exe -applaunch <app-id> -debug_mode`, using the
+registered Steam client and a Steam URI fallback. It no longer waits for Steam
+startup on the UI thread or falls back to launching the game executable itself.
+Six launch regressions bring the automated suite to 58 passing tests. The Steam
+client and app ID were resolved successfully on the test computer. Confirmation
+of DLC verification after a real relaunch remains a manual check.
