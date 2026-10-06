@@ -46,10 +46,32 @@ def mod_source() -> Path:
 
 
 def config_path() -> Path:
+    if sys.platform.startswith("linux"):
+        from .platform_linux import xdg_config_home
+        return xdg_config_home() / "WhispersInTheCourt" / "config.json"
     if frozen():
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
         return base / "WhispersInTheCourt" / "config.json"
     return Path(__file__).resolve().parents[1] / "config.json"
+
+
+def open_path(path: Path) -> bool:
+    """Open an existing local file/directory in the platform's desktop handler.
+
+    Good: ``open_path(Path('/absolute/logs'))``; check the returned bool.
+    Bad: pass a URL, a shell command, or assume True means the viewer finished.
+    """
+    try:
+        path = path.resolve(strict=True)
+        if os.name == "nt":
+            os.startfile(str(path))
+            return True
+        if sys.platform.startswith("linux"):
+            from .platform_linux import open_desktop
+            return open_desktop(str(path))
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return False
 
 
 def fingerprint(folder: Path) -> str:
@@ -85,6 +107,8 @@ def signature(cfg) -> str:
 
 def install_mod(cfg, log: Callable[[str], None]) -> bool:
     """Copy the carried mod into EU5's mod folder, with what depends on this player's game."""
+    if sys.platform.startswith("linux") and not _linux_game_closed(log):
+        return False
     source = mod_source()
     if not source.is_dir():
         log(f"WARNING: the mod to install is missing ({source}).")
@@ -95,6 +119,8 @@ def install_mod(cfg, log: Callable[[str], None]) -> bool:
             f"{config_path()} to the folder that holds EU5's logs, mod and save games.")
         return False
     target = cfg.user_path / "mod" / "WhispersInTheCourt"
+    if sys.platform.startswith("linux") and not _linux_game_closed(log):
+        return False
     _remove_old_copies(cfg, log)
     try:
         if target.exists():
@@ -188,15 +214,22 @@ def _remove_old_copies(cfg, log: Callable[[str], None]) -> None:
             pass
 
 
-def ensure_mod(cfg, log: Callable[[str], None]) -> None:
-    """Install the mod if it is missing, update it if it is not the one carried here."""
+def ensure_mod(cfg, log: Callable[[str], None]) -> bool | None:
+    """Install/update the carried mod. Linux returns whether it is ready; Windows returns None.
+
+    Good: Linux launch checks ``ensure_mod(cfg, log) is True`` before requesting Steam.
+    Bad: ignore a False result and launch after a failed/blocked installation.
+    """
+    linux = sys.platform.startswith("linux")
+    if linux and not _linux_game_closed(log):
+        return False
     source = mod_source()
     if not source.is_dir() or not cfg.user_dir:
         if not cfg.user_dir:
             log("WARNING: EU5's folder in Documents was not found. Start the game once, then reopen "
                 "Whispers in the Court. If it still is not found, set \"user_dir\" in "
                 f"{config_path()} to the folder that holds EU5's logs, mod and save games.")
-        return
+        return False if linux else None
     target = cfg.user_path / "mod" / "WhispersInTheCourt"
     try:
         installed = (target / MARK).read_text(encoding="utf-8").strip()
@@ -204,8 +237,8 @@ def ensure_mod(cfg, log: Callable[[str], None]) -> None:
         installed = ""
     if installed and installed == signature(cfg):
         log("The installed mod is up to date.")
-        return
-    if target.exists() and _running("eu5.exe"):
+        return True if linux else None
+    if not linux and target.exists() and _running("eu5.exe"):
         # Replacing the mod under a running game leaves it with the old scripts in memory, its file
         # watcher broken, and Court Brain sending orders only the new mod knows: it crashes. The
         # update waits until the game is closed (Start EU5 does it first).
@@ -214,7 +247,8 @@ def ensure_mod(cfg, log: Callable[[str], None]) -> None:
             "first), or reopen Whispers in the Court with the game closed.")
         return
     log("Updating the mod in EU5's folder…" if target.exists() else "Installing the mod in EU5's folder…")
-    install_mod(cfg, log)
+    installed_ok = install_mod(cfg, log)
+    return installed_ok if linux else None
 
 
 def steam_app_id(game_dir: str) -> str:
@@ -238,8 +272,11 @@ DEBUG_HELP = ("In Steam: right-click Europa Universalis V > Properties > Launch 
               "then start the game as usual.")
 
 
-def _running(image: str) -> bool:
-    """Is a program with this file name running? (Windows only; False elsewhere.)"""
+def _running(image: str) -> bool | None:
+    """A process image: Linux returns None when the scan cannot prove absence."""
+    if sys.platform.startswith("linux"):
+        from .platform_linux import process_running
+        return process_running(image)
     # Read as bytes: tasklist writes in the console's own code page, which on a
     # Windows in another language is not UTF-8 (the output then came back as None
     # and "Start EU5" failed). The image name itself is always plain ASCII.
@@ -251,6 +288,35 @@ def _running(image: str) -> bool:
     return image.lower().encode("ascii") in (out.stdout or b"").lower()
 
 
+def _linux_game_closed(log: Callable[[str], None]) -> bool:
+    running = _running("eu5.exe")
+    if running is False:
+        return True
+    if running is None:
+        log("WARNING: EU5 process status could not be checked. The mod is not changed and EU5 is not "
+            "launched while the process scan is uncertain. Check access to /proc and try again.")
+    else:
+        log("EU5 is already running. Close it before installing/updating the mod or starting it again. "
+            + DEBUG_HELP)
+    return False
+
+
+def _launch_linux_game(cfg, log: Callable[[str], None]) -> None:
+    if not _linux_game_closed(log):
+        return
+    if ensure_mod(cfg, log) is not True:
+        log("WARNING: EU5 was not launched because the mod could not be installed/verified.")
+        return
+    if not _linux_game_closed(log):
+        return
+    from .platform_linux import launch_steam
+    if launch_steam(steam_app_id(cfg.game_dir)):
+        log("Starting EU5 with -debug_mode through Steam (if Steam asks to confirm the option, accept).")
+    else:
+        log("WARNING: could not open the Steam protocol handler. Start EU5 yourself with -debug_mode. "
+            + DEBUG_HELP)
+
+
 def launch_game(cfg, log: Callable[[str], None]) -> None:
     """Start EU5 with -debug_mode, which the mod needs to load its texts.
 
@@ -258,6 +324,9 @@ def launch_game(cfg, log: Callable[[str], None]) -> None:
     line: Steam's steam://run/<id>//<options> link asks the player to confirm, and
     the option is easily lost on the way (testers' games started without it). Steam
     must be running first, or the game restarts itself through Steam without it."""
+    if sys.platform.startswith("linux"):
+        _launch_linux_game(cfg, log)
+        return
     if _running("eu5.exe"):
         log("EU5 is already running. If it was not started with -debug_mode, close it and press "
             "Start EU5 again. " + DEBUG_HELP)
@@ -292,11 +361,18 @@ def launch_game(cfg, log: Callable[[str], None]) -> None:
 
 
 _MUTEX = None
+_LINUX_LOCK = None
 
 
 def single_instance() -> bool:
     """True if no other Court Brain runs: two would read and write the same files."""
     global _MUTEX
+    global _LINUX_LOCK
+    if sys.platform.startswith("linux"):
+        from .platform_linux import InstanceLock
+        if _LINUX_LOCK is None:
+            _LINUX_LOCK = InstanceLock(config_path().parent)
+        return _LINUX_LOCK.acquire()
     if not hasattr(sys, "getwindowsversion"):
         return True
     import ctypes

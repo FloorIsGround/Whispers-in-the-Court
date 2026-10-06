@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,9 @@ def _known_documents() -> list[Path]:
 
 
 def _user_dir_candidates() -> list[Path]:
+    if sys.platform.startswith("linux"):
+        from .platform_linux import user_dir_candidates
+        return user_dir_candidates()
     home = _home()
     out = [docs / _EU5 for docs in _known_documents()]
     out += [home / rel for rel in _USER_DIR_CANDIDATES]
@@ -127,6 +131,9 @@ def discover_game_language(user_dir: str | Path) -> str:
 
 def discover_game_dir() -> Path | None:
     """The EU5 install directory, by walking Steam's library list."""
+    if sys.platform.startswith("linux"):
+        from .platform_linux import discover_game_dir as linux_game_dir
+        return linux_game_dir()
     steam_roots = [
         Path(r"C:/Program Files (x86)/Steam"),
         Path(r"C:/Program Files/Steam"),
@@ -162,6 +169,9 @@ def discover_player2_port() -> int:
     hint that Player2 is not running - but we still fall back to the
     documented default rather than refusing to try.
     """
+    if sys.platform.startswith("linux"):
+        from .platform_linux import discover_player2_port as linux_port
+        return linux_port()
     appdata = os.environ.get("APPDATA")
     if appdata:
         f = Path(appdata) / "game.player2.client" / "api.port"
@@ -371,6 +381,8 @@ def set_option(key: str, value: Any, path: str | os.PathLike[str] | None = None)
 
 def save(cfg: Config, path: str | os.PathLike[str] | None = None) -> Path:
     cfg_path = Path(path) if path else _default_config_path()
+    if sys.platform.startswith("linux"):
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
     data = asdict(cfg)
     data.pop("extra", None)
     cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
