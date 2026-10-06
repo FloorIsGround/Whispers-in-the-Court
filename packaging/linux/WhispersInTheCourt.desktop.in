@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Whispers in the Court
+Comment=Court Brain companion for Europa Universalis V
+Exec="@EXECUTABLE@"
+Icon=applications-games
+Terminal=false
+Categories=Game;
+StartupNotify=true

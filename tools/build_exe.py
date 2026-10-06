@@ -1,16 +1,20 @@
-"""Build WhispersInTheCourt.exe: one file with Python, Court Brain and the mod.
+"""Build one native executable with Python, Court Brain and the bundled mod.
 
-Run from the repository root:  py -3 tools/build_exe.py
+Windows: py -3 tools/build_exe.py -> dist/WhispersInTheCourt.exe
+Linux:   python3 tools/build_exe.py -> dist/WhispersInTheCourt
 
-It checks the mod, installs PyInstaller for the build if it is missing (the
-players never need it), draws the program's icon, and writes
-dist/WhispersInTheCourt.exe. That file is all a player downloads: started, it
-installs or updates the mod in EU5's mod folder and opens the Court Brain
-window. Player2 remains a separate app, as it always was.
+Windows retains its original icon/one-file/windowed build and automatic
+PyInstaller installation; --no-install disables installation. Linux requires
+an already prepared build environment and never installs packages. Both run
+the local static mod validator before building. See packaging/linux/README.md
+for source launching, asset policy and Linux libc compatibility limitations.
+Player2 remains separate. No Wine is needed for the Linux companion.
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import math
 import shutil
 import struct
@@ -100,31 +104,111 @@ def make_icon(path: Path) -> None:
 
 # ----------------------------------------------------------------------
 
-def main() -> int:
+def executable_path(platform: str) -> Path:
+    return DIST / (f"{NAME}.exe" if platform == "win32" else NAME)
+
+
+def static_asset_manifest() -> list[tuple[Path, str]]:
+    """Only reviewed upstream assets; never collect the source/config tree as data."""
+    names = json.loads((ROOT / "packaging" / "linux" / "assets.json").read_text(encoding="utf-8"))
+    if not isinstance(names, list) or not names or not all(isinstance(n, str) for n in names):
+        raise ValueError("Invalid static asset manifest")
+    if len(names) != len(set(names)):
+        raise ValueError("Duplicate static asset manifest entry")
+    manifest = []
+    for name in names:
+        relative = Path(name)
+        parts = relative.parts
+        private = any(
+            part.lower() in {"config.json", "instructions.json", "logs", "log", "__pycache__"}
+            or any(token in part.lower() for token in (".env", "api_key", "apikey", "secret", "credential"))
+            or part.lower().endswith((".log", ".key", ".pem"))
+            for part in parts
+        )
+        is_mod = parts[:2] == ("mod", NAME)
+        is_icon = name == "tools/court_brain/courtbrain/icon.ico"
+        if (relative.is_absolute() or ".." in parts or relative.as_posix() != name
+                or private or not (is_mod or is_icon) or ":" in name or ";" in name):
+            raise ValueError(f"Unsafe static asset manifest entry: {name}")
+        source = ROOT / relative
+        if any(p.is_symlink() for p in (source, *source.parents) if p != ROOT and ROOT in p.parents):
+            raise ValueError(f"Symlink assets are not permitted: {name}")
+        if not source.is_file():
+            raise ValueError(f"Missing static asset: {name}")
+        manifest.append((source, relative.parent.as_posix() if is_mod else "courtbrain"))
+    return manifest
+
+
+def build_arguments(platform: str, icon: Path) -> list[str]:
+    args = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile"]
+    if platform == "win32":
+        args += ["--windowed", "--name", NAME, "--icon", str(icon)]
+    else:
+        args += ["--name", NAME, "--collect-submodules", "courtbrain"]
+    args += ["--paths", str(BRAIN)]
+    if platform == "win32":
+        # Keep the Windows command/output identical to the original builder.
+        args += [
+            "--add-data", f"{MOD};mod/WhispersInTheCourt",
+            "--add-data", f"{BRAIN / 'courtbrain' / 'icon.ico'};courtbrain",
+        ]
+    else:
+        for source, destination in static_asset_manifest():
+            args += ["--add-data", f"{source}:{destination}"]
+    args += [
+        "--distpath", str(DIST), "--workpath", str(BUILD / "pyinstaller"), "--specpath", str(BUILD),
+        str(BRAIN / f"{NAME}.py"),
+    ]
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Build the native Whispers in the Court executable.")
+    parser.add_argument("--no-install", action="store_true",
+                        help="fail if PyInstaller is missing (always enabled on Linux)")
+    options = parser.parse_args(argv)
+    if sys.platform not in {"win32", "linux"}:
+        print("Build on Windows or Linux for that same platform; cross-compiling is not supported.")
+        return 1
+    if sys.platform == "linux":
+        try:
+            import PyInstaller  # noqa: F401
+        except ImportError:
+            print(f"PyInstaller is missing from {sys.executable}. Use a prepared build environment. "
+                  "No packages were installed.")
+            return 1
+    try:
+        manifest = static_asset_manifest()
+        if sys.platform == "win32":
+            # The unchanged Windows --add-data directory includes every file:
+            # reject dirty/private additions rather than silently packaging them.
+            reviewed = {source for source, _ in manifest if MOD in source.parents}
+            actual = {p for p in MOD.rglob("*") if p.is_file() or p.is_symlink()}
+            if actual != reviewed or MOD.is_symlink() or any(p.is_symlink() for p in MOD.rglob("*")):
+                raise ValueError("Unreviewed files in the mod directory; use a clean source tree")
+    except (OSError, ValueError) as exc:
+        print(f"Cannot safely package assets: {exc}")
+        return 1
     check = subprocess.run([sys.executable, str(ROOT / "tools" / "validate_mod.py")])
     if check.returncode != 0:
         print("The mod has problems: fix them before building the exe.")
         return 1
-    try:
-        import PyInstaller  # noqa: F401
-    except ImportError:
-        print("Installing PyInstaller (only needed to build the exe)…")
-        subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "pyinstaller"], check=True)
+    if sys.platform == "win32":
+        try:
+            import PyInstaller  # noqa: F401
+        except ImportError:
+            if options.no_install:
+                print(f"PyInstaller is missing from {sys.executable}. No packages were installed.")
+                return 1
+            print("Installing PyInstaller (only needed to build the exe)…")
+            subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "pyinstaller"], check=True)
     BUILD.mkdir(exist_ok=True)
     icon = BUILD / f"{NAME}.ico"
-    make_icon(icon)
-    shutil.copyfile(icon, BRAIN / "courtbrain" / "icon.ico")      # also the windows' own icon
-    args = [
-        sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
-        "--name", NAME, "--icon", str(icon),
-        "--paths", str(BRAIN),
-        "--add-data", f"{MOD}{';' if sys.platform == 'win32' else ':'}mod/WhispersInTheCourt",
-        "--add-data", f"{BRAIN / 'courtbrain' / 'icon.ico'}{';' if sys.platform == 'win32' else ':'}courtbrain",
-        "--distpath", str(DIST), "--workpath", str(BUILD / "pyinstaller"), "--specpath", str(BUILD),
-        str(BRAIN / f"{NAME}.py"),
-    ]
-    subprocess.run(args, check=True)
-    exe = DIST / f"{NAME}.exe"
+    if sys.platform == "win32":
+        make_icon(icon)
+        shutil.copyfile(icon, BRAIN / "courtbrain" / "icon.ico")      # also the windows' own icon
+    subprocess.run(build_arguments(sys.platform, icon), check=True)
+    exe = executable_path(sys.platform)
     print(f"\nReady: {exe} ({exe.stat().st_size / 1e6:.1f} MB)")
     return 0
 
