@@ -14,7 +14,6 @@ Brain's folder. Closing the window ends Court Brain.
 
 from __future__ import annotations
 
-import os
 import queue
 import webbrowser
 import re
@@ -23,9 +22,10 @@ import tkinter as tk
 from pathlib import Path
 from typing import Any, Callable
 
-from . import prompts
+from . import bundle, prompts
 from .drawer import (BAD, BLUE, CARD, CARD_HI, GOLD, GOLD_DEEP, GOLD_DIM, GOLD_HI, GOOD, INSET, NAVY, NAVY_HI,
-                     NAVY_LO, TEXT, TEXT_DIM, Art, Bar, Plate, ThinScroll, dark_title_bar, gradient, inset, mix)
+                     NAVY_LO, TEXT, TEXT_DIM, Art, Bar, Plate, ThinScroll, bind_x11_wheel, dark_title_bar, gradient, inset, mix,
+                     set_window_icon)
 
 LOG_LIMIT = 2 * 1024 * 1024
 MAX_LINES = 1500
@@ -82,14 +82,7 @@ _GOOD = re.compile(r"works|answers at|started|ready|installed|up to date", re.I)
 
 
 def _set_icon(win: tk.Toplevel, art: Art) -> None:
-    ico = Path(__file__).with_name("icon.ico")
-    try:
-        if ico.is_file():
-            win.iconbitmap(default=str(ico))       # also the taskbar's
-        elif art.img("corner_tl") is not None:
-            win.iconphoto(True, art.img("corner_tl"))
-    except tk.TclError:
-        pass
+    set_window_icon(win, art)
 
 
 def _header(canvas: tk.Canvas, art: Art, title: str, subtitle: str, h: int) -> None:
@@ -247,6 +240,7 @@ class Ledger:
         self.text.pack(side="left", fill="both", expand=True)
         self.text.configure(yscrollcommand=scroll.set)
         self.text.bind("<MouseWheel>", lambda e: self.text.yview_scroll(int(-e.delta / 60), "units"))
+        bind_x11_wheel(self.text)
         self.text.tag_configure("time", foreground=GOLD_DIM, font=a.small)
         self.text.tag_configure("msg", foreground=TEXT)
         self.text.tag_configure("gold", foreground=GOLD_HI)
@@ -593,17 +587,17 @@ class Ledger:
 
     # ================================================================ buttons
     def _open_data(self) -> None:
-        if self.data_dir is not None and hasattr(os, "startfile"):
+        if self.data_dir is not None:
             try:
                 self.data_dir.mkdir(parents=True, exist_ok=True)
-                os.startfile(self.data_dir)          # noqa: S606 - the player's own folder
+                bundle.open_path(self.data_dir)
             except OSError:
                 pass
 
     def _open_log(self) -> None:
-        if self.log_file is not None and self.log_file.is_file() and hasattr(os, "startfile"):
+        if self.log_file is not None and self.log_file.is_file():
             try:
-                os.startfile(self.log_file)          # noqa: S606
+                bundle.open_path(self.log_file)
             except OSError:
                 pass
 
@@ -689,6 +683,7 @@ class InstructionsEditor:
         scroll.pack(side="right", fill="y", padx=(0, 3), pady=6)
         self.editor.pack(side="left", fill="both", expand=True)
         self.editor.configure(yscrollcommand=scroll.set)
+        bind_x11_wheel(self.editor)
         self.editor.bind("<<Modified>>", lambda _e: self._modified())
         dark_title_bar(self.win)
         self.listbox.selection_set(1)

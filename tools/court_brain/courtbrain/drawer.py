@@ -9,7 +9,10 @@ fleur-de-lis corners, carved ornament and diamond dividers (decoded from the
 game's files by gfx.py and painted gold), plate buttons, the khaki section
 bars of the outliner, and the game's typefaces (Cormorant Garamond for
 headings, Noto Serif for text, loaded from the game folder for this process
-only).
+only). On Linux the same panel is a managed standalone window rather than
+attempting Win32/Proton or compositor-specific docking. Its title bar remains
+available for moving, minimizing and restoring it; Ctrl+Shift+Space in either
+Court Brain window restores a dismissed panel without clearing the transcript.
 
 Tkinter ships with Python, so the panel adds no dependency.
 
@@ -21,8 +24,11 @@ runs; the panel talks back through the callbacks it was given.
 from __future__ import annotations
 
 import ctypes
+import ctypes.util
 import ctypes.wintypes as wt
+import os
 import queue
+import sys
 import tkinter as tk
 import tkinter.font as tkfont
 from dataclasses import dataclass
@@ -86,7 +92,8 @@ def gradient(canvas: tk.Canvas, x0: int, y0: int, x1: int, y1: int, top: str, bo
 # --------------------------------------------------------------------------
 
 def _load_game_fonts(game_dir: str) -> None:
-    if not IS_WINDOWS or not game_dir:
+    """Register installed game fonts for this process, before creating Tk."""
+    if not game_dir:
         return
     root = Path(game_dir) / "game" / "loading_screen" / "fonts"
     wanted = [
@@ -96,11 +103,41 @@ def _load_game_fonts(game_dir: str) -> None:
         "MapNamesFonts/NotoSerif-Regular.ttf",
         "MapNamesFonts/NotoSerif_SemiCondensed-Regular.ttf",
     ]
-    for rel in wanted:
-        path = root / rel
-        if path.is_file():
-            # FR_PRIVATE: visible to this process only, gone when it exits.
-            ctypes.windll.gdi32.AddFontResourceExW(str(path), 0x10, 0)
+    if IS_WINDOWS:
+        for rel in wanted:
+            path = root / rel
+            if path.is_file():
+                # FR_PRIVATE: visible to this process only, gone when it exits.
+                ctypes.windll.gdi32.AddFontResourceExW(str(path), 0x10, 0)
+        return
+    if not sys.platform.startswith("linux"):
+        return
+    paths = [root / rel for rel in wanted if (root / rel).is_file()]
+    if not paths:
+        return
+    try:
+        library = ctypes.util.find_library("fontconfig")
+        if not library:
+            return
+        fc = ctypes.CDLL(library)
+        fc.FcConfigGetCurrent.argtypes = []
+        fc.FcConfigGetCurrent.restype = ctypes.c_void_p
+        fc.FcConfigAppFontAddFile.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        fc.FcConfigAppFontAddFile.restype = ctypes.c_int
+        fc.FcConfigBuildFonts.argtypes = [ctypes.c_void_p]
+        fc.FcConfigBuildFonts.restype = ctypes.c_int
+        config = fc.FcConfigGetCurrent()
+        if not config:
+            return
+        # App fonts belong only to this process's config: no copy, fc-cache,
+        # persistent font installation or redistribution of game assets.
+        added = False
+        for path in paths:
+            added = bool(fc.FcConfigAppFontAddFile(config, os.fsencode(path))) or added
+        if added:
+            fc.FcConfigBuildFonts(config)
+    except (AttributeError, OSError, TypeError, ctypes.ArgumentError):
+        pass                          # Art chooses an available serif instead
 
 
 def _pick(families: set[str], *candidates: str) -> str:
@@ -120,8 +157,17 @@ class Art:
 
     def __init__(self, root: tk.Misc, game_dir: str, cache_dir: Path | None) -> None:
         fams = set(tkfont.families(root))
-        head = _pick(fams, "Cormorant Garamond SemiBold", "Cormorant Garamond", "Georgia")
-        body = _pick(fams, "Noto Serif", "Noto Serif SemiCondensed", "Georgia")
+        if IS_WINDOWS:
+            head = _pick(fams, "Cormorant Garamond SemiBold", "Cormorant Garamond", "Georgia")
+            body = _pick(fams, "Noto Serif", "Noto Serif SemiCondensed", "Georgia")
+        else:
+            # Tk builds without Xft expose core X11 families, not fontconfig's
+            # TTF list. Prefer modern serifs when available, then real core
+            # serif families rather than requesting an absent Georgia/fixed.
+            fallback = ("Georgia", "Noto Serif", "Liberation Serif", "DejaVu Serif", "FreeSerif",
+                        "Nimbus Roman No9 L", "Bitstream Charter", "Latin Modern Roman", "Times", "serif")
+            head = _pick(fams, "Cormorant Garamond SemiBold", "Cormorant Garamond", *fallback)
+            body = _pick(fams, "Noto Serif", "Noto Serif SemiCondensed", *fallback)
         self.kind = tkfont.Font(root, family=head, size=11, weight="bold")
         self.title = tkfont.Font(root, family=head, size=21, weight="bold")
         self.sub = tkfont.Font(root, family=body, size=10, slant="italic")
@@ -335,6 +381,53 @@ class ThinScroll(tk.Canvas):
         self.target.yview_moveto(max(0.0, e.y / max(1, self.winfo_height()) - self._grab))
 
 
+def _spaced_kind(kind: str, font: tkfont.Font) -> str:
+    """Keep the game's tracking; avoid missing thin-space glyphs in core X11 fonts."""
+    if not kind:
+        return ""
+    space = "\u2009"
+    if not IS_WINDOWS:
+        thin, normal = font.measure(space), font.measure(" ")
+        if thin <= 0 or thin > normal:
+            space = " "
+    return space.join(kind.upper())
+
+
+def set_window_icon(win: tk.Toplevel, art: Art) -> None:
+    """Keep the Windows icon; use existing artwork when Tk cannot read .ico."""
+    ico = Path(__file__).with_name("icon.ico")
+    try:
+        if ico.is_file():
+            win.iconbitmap(default=str(ico))
+            return
+    except tk.TclError:
+        pass
+    try:
+        image = art.img("corner_tl")
+        if image is not None:
+            win.iconphoto(True, image)
+    except tk.TclError:
+        pass
+
+
+def bind_x11_wheel(widget: tk.Text) -> None:
+    """Handle X11/XWayland wheel buttons without double-scrolling Tk's class binding."""
+    if IS_WINDOWS:
+        return
+    try:
+        if widget.tk.call("tk", "windowingsystem") != "x11":
+            return
+    except tk.TclError:
+        return
+
+    def scroll(units: int) -> str:
+        widget.yview_scroll(units, "units")
+        return "break"
+
+    widget.bind("<Button-4>", lambda _e: scroll(-2))
+    widget.bind("<Button-5>", lambda _e: scroll(2))
+
+
 def dark_title_bar(win: tk.Toplevel) -> None:
     """Windows 10/11 draw the title bar dark when asked; the white one would clash."""
     if not IS_WINDOWS:
@@ -408,12 +501,22 @@ class Drawer:
 
         self.win = tk.Toplevel(self.root)
         self.win.title(self.WINDOW_TITLE)
-        self.win.overrideredirect(True)
-        self.win.attributes("-topmost", True)
+        if IS_WINDOWS:
+            self.win.overrideredirect(True)
+            self.win.attributes("-topmost", True)
+        else:
+            # Managed standalone window: taskbar/minimize/restore and native
+            # dragging remain available on X11 and Wayland (usually XWayland).
+            # Do not assume access to Proton's window or compositor positioning.
+            self.win.protocol("WM_DELETE_WINDOW", self.cb.on_close)
+            set_window_icon(self.win, self.art)
+            self.root.bind_all("<Control-Shift-space>", lambda _e: self.show())
         self.win.configure(bg=GOLD)
         self.win.withdraw()
 
         self._shown = False
+        self._standalone_positioned = False
+        self._drag_origin: tuple[int, int, int, int] | None = None
         self._busy = False
         self._busy_text = ""
         self._busy_tick = 0
@@ -423,7 +526,8 @@ class Drawer:
         self._header = Header()
         self._build()
         self.root.after(60, self._drain)
-        self.root.after(500, self._follow_game)
+        if IS_WINDOWS:
+            self.root.after(500, self._follow_game)
         self.root.after(400, self._animate)
 
     # ------------------------------------------------------------------ API
@@ -452,6 +556,10 @@ class Drawer:
         self.head.tag_bind("close", "<ButtonRelease-1>", lambda _e: self.cb.on_close())
         self.head.tag_bind("close", "<Enter>", lambda _e: self._close_hover(True))
         self.head.tag_bind("close", "<Leave>", lambda _e: self._close_hover(False))
+        if not IS_WINDOWS:
+            self.head.bind("<ButtonPress-1>", self._start_drag)
+            self.head.bind("<B1-Motion>", self._drag_window)
+            self.head.bind("<ButtonRelease-1>", lambda _e: setattr(self, "_drag_origin", None))
 
         # Bottom sections are packed first, from the bottom up, so the
         # transcript can take whatever height is left without ever pushing
@@ -468,6 +576,7 @@ class Drawer:
                              relief="flat", wrap="word", font=f.text, padx=10, pady=8,
                              highlightthickness=0, selectbackground=GOLD_DEEP)
         self.entry.pack(fill="x")
+        bind_x11_wheel(self.entry)
         self.entry.bind("<Return>", self._on_return)
         self.entry.bind("<FocusIn>", lambda _e: self._hide_placeholder())
         self.entry.bind("<FocusOut>", lambda _e: self._show_placeholder())
@@ -514,6 +623,7 @@ class Drawer:
         self.text.pack(side="left", fill="both", expand=True)
         self.text.configure(yscrollcommand=self.scroll.set)
         self.text.bind("<MouseWheel>", lambda e: self.text.yview_scroll(int(-e.delta / 60), "units"))
+        bind_x11_wheel(self.text)
         self.text.tag_configure("speaker", foreground=GOLD_HI, font=f.speaker, spacing1=6, spacing3=1)
         self.text.tag_configure("role", foreground=BLUE, font=f.gesture)
         self.text.tag_configure("speech", foreground=TEXT, font=f.text, lmargin1=2, lmargin2=2)
@@ -562,7 +672,7 @@ class Drawer:
             img = f.img(name)
             if img is not None:
                 c.create_image(x, 2, image=img, anchor=anchor)
-        kind = " ".join(hd.kind.upper()) if hd.kind else ""
+        kind = _spaced_kind(hd.kind, f.kind)
         if kind:
             c.create_text(w // 2, 24, text=kind, font=f.kind, fill=GOLD)
             half = f.kind.measure(kind) // 2 + 14
@@ -627,7 +737,38 @@ class Drawer:
         self.root.quit()
 
     # -------------------------------------------------------------- docking
+    def _start_drag(self, event: tk.Event) -> None:
+        self._drag_origin = None
+        try:
+            if IS_WINDOWS or "close" in self.head.gettags("current"):
+                return
+            # Native Wayland may refuse programmatic moves; use its title bar
+            # there instead. XWayland exposes x11 and can usually move normally.
+            if self.win.tk.call("tk", "windowingsystem") == "x11":
+                self._drag_origin = (event.x_root, event.y_root, self.win.winfo_x(), self.win.winfo_y())
+        except tk.TclError:
+            pass
+
+    def _drag_window(self, event: tk.Event) -> None:
+        if IS_WINDOWS or self._drag_origin is None:
+            return
+        ex, ey, x, y = self._drag_origin
+        x += event.x_root - ex
+        y += event.y_root - ey
+        # Keep the title/close controls reachable on the current screen.
+        x = max(0, min(x, self.root.winfo_screenwidth() - self.win.winfo_width()))
+        y = max(0, min(y, self.root.winfo_screenheight() - 80))
+        try:
+            self.win.geometry(f"+{x}+{y}")
+        except tk.TclError:
+            self._drag_origin = None
+
     def _geometry(self) -> tuple[int, int, int, int]:
+        if not IS_WINDOWS:
+            sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+            height = max(1, min(max(460, sh - TOP_MARGIN - BOTTOM_MARGIN), sh - 60))
+            y = max(0, min(TOP_MARGIN, sh - height - 40))
+            return max(0, sw - WIDTH - 10), y, sw, height
         rect = game_client_rect()
         if rect is None:
             sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
@@ -640,6 +781,8 @@ class Drawer:
 
     def _follow_game(self) -> None:
         """Keep docked to EU5, and step aside when the player leaves the game."""
+        if not IS_WINDOWS:
+            return
         try:
             self._dock()
         except Exception:  # noqa: BLE001 - a window query that fails once must not stop the docking
@@ -648,6 +791,8 @@ class Drawer:
             self.root.after(500, self._follow_game)
 
     def _dock(self) -> None:
+        if not IS_WINDOWS:
+            return
         if self._shown:
             titles = ("europa universalis", self.WINDOW_TITLE.lower(), "court brain")
             if not foreground_is(titles) and game_client_rect() is None:
@@ -675,6 +820,19 @@ class Drawer:
             on_done()
 
     # ---------------------------------------------------------- open/close
+    def show(self) -> None:
+        """Restore the Linux panel without clearing it (Ctrl+Shift+Space in Court Brain)."""
+        if IS_WINDOWS:
+            return
+        if not self._standalone_positioned:
+            x, y, _right, h = self._geometry()
+            width = min(WIDTH, self.root.winfo_screenwidth())
+            self.win.geometry(f"{width}x{h}+{x}+{y}")
+            self._standalone_positioned = True
+        self._shown = True
+        self.win.deiconify()
+        self.win.lift()
+
     def set_close_label(self, text: str) -> None:
         self.b_leave.set_text(text)
 
@@ -685,6 +843,10 @@ class Drawer:
         self.set_close_label("Dismiss")
         self._header = header
         self._draw_head()
+        if not IS_WINDOWS:
+            self.show()
+            self.root.after(250, self._focus_input)
+            return
         x, y, right, h = self._geometry()
         if not self._shown:
             self._shown = True
@@ -696,6 +858,10 @@ class Drawer:
 
     def close(self) -> None:
         if not self._shown:
+            return
+        if not IS_WINDOWS:
+            self._shown = False
+            self.win.withdraw()
             return
         x, y, right, h = self._geometry()
 
