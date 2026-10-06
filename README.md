@@ -2,8 +2,59 @@
 
 A mod for **EU5 1.3.11**, inspired by the CK3 mod *Voices of the Court*. Talk
 with your court, summon the council, send envoys to foreign courts and travel
-your realm. The AI of the **Player2** app answers, and what comes of it reaches
+your realm. Your configured AI provider answers, and what comes of it reaches
 the game as real events and consequences.
+
+## Architecture at a glance
+
+The mod has three main parts: the scripts running inside EU V, the separate
+Python companion **Court Brain**, and an external AI provider. Court Brain
+reads game state, manages conversations and stories, and translates supported
+decisions into game effects.
+
+```mermaid
+flowchart TB
+    subgraph EUV["EU V - running game"]
+        GAME["Game state, player interactions,<br/>events and scripted effects"]
+        BRIDGE["Invisible GUI bridge"]
+        GAME <-->|"Read state / apply effects"| BRIDGE
+    end
+
+    subgraph CB["Court Brain - separate Python application"]
+        READ["Read console history<br/>and assemble game snapshots"]
+        CORE["Main controller<br/>Conversations, stories, diplomacy, battles"]
+        UI["Chat overlay<br/>Settings and status window"]
+        CONTEXT["World context<br/>and campaign memory"]
+        AI["Prompts and AI client"]
+        RULES["Validate decisions<br/>and construct game effects"]
+        MAIL["Mailbox<br/>Generated text and script delivery"]
+
+        READ --> CORE
+        UI <-->|"Player messages / replies"| CORE
+        CONTEXT <--> CORE
+        CORE <--> AI
+        CORE --> RULES
+        RULES --> MAIL
+    end
+
+    DATA["Game definitions<br/>and save files"] --> CONTEXT
+    DISK["Local campaign journal<br/>Characters and story history"] <--> CONTEXT
+
+    BRIDGE -->|"console_history.txt<br/>State records and acknowledgements"| READ
+    MAIL -->|"votc_poll.txt<br/>and localization files"| BRIDGE
+
+    AI <-->|"Prompts / structured responses"| PROVIDER["Selected AI provider<br/>Player2, Gemini or OpenRouter"]
+    AI -.->|"Voice and background checks"| P2["Player2 desktop app"]
+```
+
+The boxes inside Court Brain are modules of one application. The game and
+companion exchange files: game snapshots come through console history, while
+scripts and generated localization carry outcomes back into EU V. Dialogue
+and consequence judging use separate AI requests; Python validates supported
+actions before sending them to the game. Voice features and background
+Player2 checks still use the Player2 app when another text provider is selected.
+
+See [the architecture guide](docs/ARCHITETTURA.md) for implementation details.
 
 ## Getting started
 
